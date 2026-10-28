@@ -39,6 +39,8 @@ QueueHandle_t cmdQueue;
 // ---- 내 기기 ----
 uint16_t myId;
 char bleName[16];
+char myName[NAME_LEN + 1];  // 화면 맨 위에 보이는 내 이름 (앱에서 정함)
+char frName[NAME_LEN + 1];  // 상대가 보내 준 이름
 uint8_t netId;
 uint32_t bootNonce, txCounter;
 
@@ -77,17 +79,32 @@ uint16_t meetVer;
 uint8_t txMsgSeq, txMsgType, pingTx;  // pingTx: 0 없음, 1 보내는 중, 2 전달됨
 uint8_t rxMsgSeq, pingRx, msgRx = 1;
 
+// ---- 실내 찾기 ----
+uint32_t findUntil;          // 0이면 꺼짐
+bool frFinding;              // 상대도 찾는 중
+uint16_t myAcc, frAcc;       // 위치 오차 (m)
+float rssiAvg;               // 상대 신호 평균 (dBm)
+int8_t trend;                // 1 가까워짐, -1 멀어짐, 0 그대로
+int16_t rssiHist[6];         // 최근 신호 6개 (오래된 것부터)
+uint8_t rssiHistN;
+uint32_t rssiHistMs;         // 마지막으로 넣은 시각
+float scanSum[SCAN_BINS];    // 방향별 신호 합 (진북 기준 30도 칸)
+uint8_t scanCnt[SCAN_BINS];
+bool scanReady;
+uint16_t scanDir;
+uint8_t scanSpread, scanCover;
+
 // ---- 설정 (NVS "totem") ----
 uint16_t farM;
 uint8_t screenMin;
 
 // ---- 화면 ----
-enum { PAGE_FRIEND, PAGE_MEET, PAGE_GPS, PAGE_COMPASS, PAGE_SYSTEM, NPAGES };
-const char *PAGE_NAMES[] = {"상대", "만남 장소", "GPS", "나침반", "시스템"};
+enum { PAGE_FRIEND, PAGE_FIND, PAGE_MEET, PAGE_GPS, PAGE_COMPASS, PAGE_SYSTEM, NPAGES };
+const char *PAGE_NAMES[] = {"상대", "실내 찾기", "만남 장소", "GPS", "나침반", "시스템"};
 int page = PAGE_FRIEND;
 bool screenOn = true;
 uint32_t lastActivity;
-uint8_t alert;  // 0 없음, 1~3 받은 메시지, 10 너무 멀어짐
+uint8_t alert;  // 0 없음, 1~4 받은 메시지 (4 깜박여 줘), 10 너무 멀어짐
 uint32_t alertMs;
 bool farAlerted;
 char toast[40];
@@ -140,6 +157,9 @@ void setupBle() {
   BLEDevice::startAdvertising();
 }
 
+bool finding() { return findUntil && (int32_t)(millis() - findUntil) < 0; }
+bool friendFinding() { return frFinding && frSeen && millis() - frMs < 10000; }
+
 static void put16(uint8_t *b, uint16_t v) { memcpy(b, &v, 2); }
 static void put32(uint8_t *b, int32_t v) { memcpy(b, &v, 4); }
 
@@ -168,6 +188,17 @@ void updateStatus() {
   b[38] = msgRx;
   put16(b + 39, farM);
   b[41] = screenMin;
+  // 42~: 실내 찾기
+  b[42] = (finding() ? FF_FINDING : 0) | (friendFinding() ? FF_FRIEND_FINDING : 0) | (scanReady ? FF_SCAN_READY : 0);
+  put16(b + 43, (uint16_t)(int16_t)lroundf(rssiAvg));
+  b[45] = (uint8_t)trend;
+  put16(b + 46, scanDir);
+  b[48] = scanSpread;
+  b[49] = scanCover;
+  put16(b + 50, myAcc);
+  put16(b + 52, frAcc);
+  memcpy(b + 54, myName, NAME_LEN);
+  memcpy(b + 66, frName, NAME_LEN);
   statusChar->setValue(b, STATUS_LEN);
   if (bleConnected) statusChar->notify();
 }
@@ -213,8 +244,10 @@ void urgentTx() { nextTxMs = millis() + 200 + random(400); }
 void sendBeacon() {
   Payload p{};
   p.magic = 'T';
-  p.ver = 1;
-  p.flags = (myFix ? PF_FIX : 0) | (meetSet ? PF_MEET : 0) | (usingPhone ? PF_PHONE : 0);
+  p.ver = PAYLOAD_VER;
+  p.flags = (myFix ? PF_FIX : 0) | (meetSet ? PF_MEET : 0) | (usingPhone ? PF_PHONE : 0) | (finding() ? PF_FIND : 0);
+  p.acc = myAcc;
+  memcpy(p.name, myName, NAME_LEN);
   p.sats = gps.sats;
   p.bat = batPct;
   p.lat = myLat;
@@ -239,7 +272,74 @@ void sendBeacon() {
 void raiseAlert(uint8_t kind);
 void showToast(const char *s);
 
+// ---- 실내 찾기: 신호 평균, 가까워지는지, 방향 재기 ----
+void resetScan() {
+  memset(scanSum, 0, sizeof(scanSum));
+  memset(scanCnt, 0, sizeof(scanCnt));
+  scanReady = false;
+  scanCover = scanSpread = 0;
+}
+
+// rescan: 찾는 중이면 방향 재기를 처음부터. 아니면 시간만 연장
+void startFind(bool rescan) {
+  bool was = finding();
+  if (!was || rescan) resetScan();
+  if (!was) showToast("실내 찾기 시작");
+  else if (rescan) showToast("방향 다시 재기");
+  findUntil = millis() + FIND_DURATION_MS;
+  urgentTx();
+}
+
+void stopFind() {
+  findUntil = 0;
+  showToast("실내 찾기 끝");
+}
+
+void addSignal(float rssi) {
+  rssiAvg = (rssiHistN == 0 || millis() - rssiHistMs > 30000) ? rssi : rssiAvg * 0.6f + rssi * 0.4f;
+  if (millis() - rssiHistMs > 30000) rssiHistN = 0;  // 오래 끊겼으면 처음부터
+  rssiHistMs = millis();
+  if (rssiHistN == 6) memmove(rssiHist, rssiHist + 1, 5 * sizeof(int16_t));
+  else rssiHistN++;
+  rssiHist[rssiHistN - 1] = lroundf(rssi);
+
+  // 최근 3개 평균과 그 전 3개 평균 비교
+  trend = 0;
+  if (rssiHistN == 6) {
+    float older = (rssiHist[0] + rssiHist[1] + rssiHist[2]) / 3.0f;
+    float newer = (rssiHist[3] + rssiHist[4] + rssiHist[5]) / 3.0f;
+    if (newer - older >= 3) trend = 1;
+    else if (older - newer >= 3) trend = -1;
+  }
+
+  // 방향 재기: 찾는 중에 몸을 돌리면, 몸이 전파를 가리지 않는 쪽(상대 쪽)이 세게 잡힘
+  if (!finding() || !bnoOk) return;
+  int bin = (int)(headingDeg / (360 / SCAN_BINS)) % SCAN_BINS;
+  scanSum[bin] += rssi;
+  scanCnt[bin]++;
+  int best = -1;
+  float bestV = -999, worstV = 999;
+  scanCover = 0;
+  for (int i = 0; i < SCAN_BINS; i++) {
+    if (!scanCnt[i]) continue;
+    scanCover++;
+    float v = scanSum[i] / scanCnt[i];
+    if (v > bestV) bestV = v, best = i;
+    if (v < worstV) worstV = v;
+  }
+  scanReady = scanCover >= SCAN_BINS * 2 / 3;
+  if (scanReady) {
+    scanDir = best * (360 / SCAN_BINS) + 180 / SCAN_BINS;
+    scanSpread = min(99, (int)lroundf(bestV - worstV));
+  }
+}
+
 void onFriend(uint16_t sid, const Payload &p, float rssi) {
+  addSignal(rssi);
+  frFinding = p.flags & PF_FIND;
+  frAcc = p.acc;
+  memcpy(frName, p.name, NAME_LEN);
+  frName[NAME_LEN] = 0;
   frSeen = true;
   frId = sid;
   frMs = millis();
@@ -263,7 +363,7 @@ void onFriend(uint16_t sid, const Payload &p, float rssi) {
   }
   if (p.msgSeq && p.msgSeq != rxMsgSeq) {
     rxMsgSeq = p.msgSeq;
-    msgRx = (p.msgType >= 1 && p.msgType <= 3) ? p.msgType : 1;
+    msgRx = (p.msgType >= 1 && p.msgType <= 4) ? p.msgType : 1;
     pingRx++;
     raiseAlert(msgRx);
     urgentTx();  // 받았다고 바로 알려 줌
@@ -337,13 +437,16 @@ void updatePosition() {
     usingPhone = false;
     myLat = gps.lat;
     myLon = gps.lon;
+    myAcc = max(3L, lroundf(gps.hdop * 5));  // 대략적인 추정
   } else if (phHave && millis() - phMs < PHONE_LOC_TTL_MS) {
     myFix = true;
     usingPhone = true;
     myLat = phLat;
     myLon = phLon;
+    myAcc = phAcc;
   } else {
     myFix = usingPhone = false;
+    myAcc = 0;
   }
 }
 
@@ -422,6 +525,21 @@ void handleCmd(const Cmd &c) {
       phMs = millis();
       phHave = true;
       break;
+    case CMD_NAME:
+      memset(myName, 0, sizeof(myName));
+      memcpy(myName, c.d + 1, min(c.len - 1, NAME_LEN));
+      prefs.begin("totem", false);
+      prefs.putString("name", myName);
+      prefs.end();
+      urgentTx();
+      showToast("이름 저장됨");
+      break;
+    case CMD_FIND: {
+      uint8_t arg = c.len >= 2 ? c.d[1] : 1;
+      if (arg == 0) stopFind();
+      else startFind(arg == 2);  // 1: 켜기/연장, 2: 방향 다시 재기
+      break;
+    }
   }
 }
 
@@ -451,10 +569,12 @@ void onShortPress() {
     return;
   }
   page = (page + 1) % NPAGES;
+  showToast(PAGE_NAMES[page]);  // 맨 위에는 이름이 있으니 화면 이름은 잠깐 보여 줌
 }
 
 void onLongPress() {
   if (page == PAGE_FRIEND) sendMessage(1);
+  else if (page == PAGE_FIND) startFind(true);
   else if (page == PAGE_COMPASS) {
     saveCalibration();
     showToast(calSaved ? "보정값 저장됨" : "저장 실패");
@@ -503,15 +623,18 @@ void drawArrow(int cx, int cy, int r, float deg) {
   oled.drawTriangle(px(a, r), py(a, r), px(a - side, r * 0.6f), py(a - side, r * 0.6f), px(a, -r * 0.2f), py(a, -r * 0.2f));
 }
 
-// 맨 위 줄: 화면 이름 | BLE, 폰 위치, 배터리
+// 맨 위 줄: 내 이름 | 찾는 중, BLE, 폰 위치, 배터리
 void drawHeader() {
   char s[24];
-  ko(0, 11, PAGE_NAMES[page]);
+  ko(0, 11, myName);
   oled.setFont(FONT_SMALL);
-  snprintf(s, sizeof(s), "%s%s %d%%", bleConnected ? "BLE " : "", usingPhone ? "PH " : "", batPct);
+  snprintf(s, sizeof(s), "%s%s%s %d%%", finding() || friendFinding() ? "FIND " : "", bleConnected ? "BLE " : "",
+           usingPhone ? "PH " : "", batPct);
   oled.drawStr(128 - oled.getStrWidth(s), 9, s);
   oled.drawHLine(0, 13, 128);
 }
+
+const char *friendLabel() { return frName[0] ? frName : "상대"; }
 
 const char *signalWord(int rssi) { return rssi > -80 ? "강함" : rssi > -100 ? "보통" : "약함"; }
 
@@ -519,18 +642,25 @@ void drawFriendPage() {
   char s[40];
   uint32_t age = (millis() - frMs) / 1000;
   float d, brg;
+  bool located = frSeen && friendDistance(d, brg);
+  bool fuzzy = located && myAcc + frAcc > d;  // 위치 오차가 거리보다 크면 화살표를 믿을 수 없음 (주로 실내 폰 위치)
   if (!frSeen) {
     ko(0, 32, "아직 상대가 없어요");
     ko(0, 48, "신호 기다리는 중...");
-  } else if (friendDistance(d, brg)) {
+  } else if (fuzzy) {
+    snprintf(s, sizeof(s), "근처예요 (약 %dm)", (int)lroundf(d));
+    ko(0, 28, s);
+    snprintf(s, sizeof(s), "신호 %s %ddBm", signalWord(frRssi), frRssi);
+    ko(0, 43, s);
+    ko(0, 58, "실내 찾기로 찾아보세요");
+  } else if (located) {
     drawArrow(28, 40, 19, brg - (bnoOk ? headingDeg : 0));
     fmtDist(s, sizeof(s), d);
     oled.setFont(FONT_BIG);
     oled.drawStr(58, 36, s);
-    snprintf(s, sizeof(s), "%lu초 전", (unsigned long)age);
-    ko(58, 50, s);
+    ko(58, 50, friendLabel());
     oled.setFont(FONT_SMALL);
-    snprintf(s, sizeof(s), "%ddBm", frRssi);
+    snprintf(s, sizeof(s), "%lus %ddBm", (unsigned long)age, frRssi);
     oled.drawStr(58, 61, s);
     if (!bnoOk) ko(92, 61, "북=위");
   } else {
@@ -546,6 +676,53 @@ void drawFriendPage() {
     snprintf(s, sizeof(s), "%lu초 전 %s", (unsigned long)age, !myFix ? "내 GPS 없음" : "상대 GPS 없음");
     ko(0, 61, s);
   }
+}
+
+void drawFindPage() {
+  char s[40];
+  uint32_t age = (millis() - frMs) / 1000;
+  if (!finding()) {
+    ko(0, 28, "길게 눌러 시작");
+    ko(0, 43, "1초마다 신호, 방향 재기");
+    if (friendFinding()) ko(0, 58, "상대가 찾는 중이에요");
+    else if (frSeen) {
+      snprintf(s, sizeof(s), "지금 신호 %ddBm", frRssi);
+      ko(0, 58, s);
+    }
+    return;
+  }
+  if (!frSeen || age > 15) {
+    ko(0, 32, "상대 신호가 없어요");
+    ko(0, 48, "기다리는 중...");
+    return;
+  }
+
+  // 왼쪽: 방향을 알면 화살표, 아니면 잰 방향 표시 (12칸)
+  if (scanReady && scanSpread >= SCAN_MIN_SPREAD) {
+    drawArrow(28, 40, 19, scanDir - headingDeg);
+  } else {
+    oled.drawCircle(28, 40, 3);
+    for (int i = 0; i < SCAN_BINS; i++) {
+      float a = (i * 30 + 15 - headingDeg) * DEG_TO_RAD;
+      int x = 28 + lroundf(19 * sinf(a)), y = 40 - lroundf(19 * cosf(a));
+      if (scanCnt[i]) oled.drawDisc(x, y, 3);
+      else oled.drawCircle(x, y, 2);
+    }
+  }
+
+  // 오른쪽: 신호 평균, 가까워지는지
+  oled.setFont(FONT_BIG);
+  snprintf(s, sizeof(s), "%d", (int)lroundf(rssiAvg));
+  oled.drawStr(58, 32, s);
+  int w = oled.getStrWidth(s);
+  oled.setFont(FONT_SMALL);
+  oled.drawStr(60 + w, 32, "dBm");
+  ko(58, 46, trend > 0 ? "가까워져요" : trend < 0 ? "멀어져요" : "그대로");
+  if (!bnoOk) ko(58, 60, "나침반 없음");
+  else if (!scanReady) {
+    snprintf(s, sizeof(s), "한 바퀴 %d/%d", scanCover, SCAN_BINS);
+    ko(58, 60, s);
+  } else ko(58, 60, scanSpread >= SCAN_MIN_SPREAD ? "화살표 쪽이 셈" : "방향 모르겠음");
 }
 
 void drawMeetPage() {
@@ -611,19 +788,33 @@ void drawSystemPage() {
 
 void drawAlert() {
   static const char *MSG[] = {"", "보고싶어!", "어디야?", "곧 갈게!"};
-  char s[32];
+  char s[48];
+  if (alert == 4) {  // 깜박여 줘: 멀리서도 보이게 화면 전체를 번쩍임
+    bool inv = (millis() / 400) % 2;
+    if (inv) oled.drawBox(0, 0, 128, 64);
+    oled.setDrawColor(inv ? 0 : 1);
+    oled.setFont(u8g2_font_gulim16_t_korean2);
+    oled.drawUTF8(18, 26, "여기예요!");
+    snprintf(s, sizeof(s), "%s에게서 찾는 중", friendLabel());
+    ko(10, 44, s);
+    ko(10, 60, "누르면 닫혀요");
+    oled.setDrawColor(1);
+    return;
+  }
   oled.drawFrame(0, 0, 128, 64);
   oled.drawFrame(2, 2, 124, 60);
   if (alert == 10) {
     float d, brg;
-    ko(10, 22, "너무 멀어졌어요");
+    snprintf(s, sizeof(s), "멀어짐: %s", friendLabel());
+    ko(10, 22, s);
     if (friendDistance(d, brg)) {
       fmtDist(s, sizeof(s), d);
       oled.setFont(FONT_BIG);
       oled.drawStr(10, 42, s);
     }
   } else {
-    ko(10, 22, "상대가 보냈어요");
+    snprintf(s, sizeof(s), "%s에게서", friendLabel());
+    ko(10, 22, s);
     oled.setFont(u8g2_font_gulim16_t_korean2);
     oled.drawUTF8(10, 42, MSG[alert]);
   }
@@ -638,6 +829,7 @@ void render() {
     drawHeader();
     switch (page) {
       case PAGE_FRIEND: drawFriendPage(); break;
+      case PAGE_FIND: drawFindPage(); break;
       case PAGE_MEET: drawMeetPage(); break;
       case PAGE_GPS: drawGpsPage(); break;
       case PAGE_COMPASS: drawCompassPage(); break;
@@ -656,7 +848,8 @@ void render() {
 }
 
 void updateLed() {
-  bool on = alert && millis() - alertMs < 10000 && (millis() / 250) % 2;
+  bool on = alert == 4 ? (millis() / 150) % 2  // 깜박여 줘: 계속 빠르게
+                      : alert && millis() - alertMs < 10000 && (millis() / 250) % 2;
   digitalWrite(PIN_LED, on);
 }
 
@@ -695,6 +888,8 @@ void setup() {
   prefs.begin("totem", true);
   farM = prefs.getUShort("farM", 0);
   screenMin = prefs.getUChar("scrMin", 0);
+  snprintf(myName, sizeof(myName), "토템%02X%02X", mac[4], mac[5]);  // 이름을 정하기 전 기본값
+  if (prefs.isKey("name")) prefs.getString("name", myName, sizeof(myName));
   prefs.end();
 
   int st = radio.begin(LORA_FREQ, LORA_BW, LORA_SF, LORA_CR, LORA_SYNC, LORA_POWER, LORA_PREAMBLE, LORA_TCXO, false);
@@ -750,15 +945,17 @@ void loop() {
   updatePosition();
   checkFar();
 
+  if (findUntil && !finding()) stopFind();  // 3분 지남
   if (loraOk && (int32_t)(now - nextTxMs) >= 0) {
     sendBeacon();
-    nextTxMs = millis() + TX_INTERVAL_MS + random(TX_JITTER_MS);
+    bool fast = finding() || friendFinding();  // 한쪽이라도 찾는 중이면 둘 다 빠르게
+    nextTxMs = millis() + (fast ? FIND_TX_INTERVAL_MS + random(400) : TX_INTERVAL_MS + random(TX_JITTER_MS));
   }
   if (now - statusMs >= 500) {
     statusMs = now;
     updateStatus();
   }
-  if (alert && alert != 10 && now - alertMs > ALERT_TIMEOUT_MS) alert = 0;
+  if (alert && alert != 10 && now - alertMs > (alert == 4 ? 30000UL : ALERT_TIMEOUT_MS)) alert = 0;
   if (screenOn && screenMin && !alert && now - lastActivity > screenMin * 60000UL) {
     oled.setPowerSave(1);
     screenOn = false;

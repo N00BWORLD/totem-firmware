@@ -18,9 +18,10 @@
 - `loop()`이 모든 것을 차례로 처리. BLE 콜백은 다른 태스크라 명령은 `cmdQueue`로 넘김
 - 위치: GPS 우선, 없으면 앱이 보낸 폰 위치(15초 유효)
 - 만남 장소는 `meetVer`가 큰 쪽이 이김. 메시지는 ack(`ackSeq`) 올 때까지 `msgSeq`를 실어 보냄
-- NVS: `totem`(farM, scrMin), `bnocal`(cal 22바이트)
+- NVS: `totem`(farM, scrMin, name), `bnocal`(cal 22바이트)
+- 실내 찾기: `findUntil`이 지나면 꺼짐. 받을 때마다 `addSignal()`이 평균·추세·방향별(30도 12칸) 신호를 갱신
 
 ## 다음 할 일
 - [ ] 야외에서 GPS·방향 화살표·거리 실측, 장착 방향에 따라 `HEADING_OFFSET` 확인
 - [ ] 배터리 절약 (화면 꺼짐 때 GPS/CPU 절전)
-- [ ] 신호 세기로 방향 찾기 (돌면서 RSSI 재기)
+- [x] 신호 세기로 방향 찾기 (v4.1 실내 찾기)

@@ -3,7 +3,7 @@
 // 아래 핀은 실제 보드에서 tools/probe 스케치로 확인한 값입니다.
 // 배선이 다르면 tools/probe 를 올려서 핀을 찾은 뒤 여기만 고치면 됩니다.
 
-#define FW_VERSION "4.0"
+#define FW_VERSION "4.1"
 
 // 보드
 #define PIN_VEXT 36       // LOW = Vext 켜짐 (OLED, GPS, BNO055 전원)
@@ -55,3 +55,9 @@
 #define PHONE_LOC_TTL_MS 15000   // 앱이 5초마다 다시 보냄
 #define FRIEND_VALID_S 60
 #define ALERT_TIMEOUT_MS 60000
+
+// 실내 찾기
+#define FIND_TX_INTERVAL_MS 1200  // 찾는 중에는 양쪽 다 이 간격으로 송신
+#define FIND_DURATION_MS 180000   // 3분 뒤 자동으로 끝 (앱이 켜 두면 계속 연장)
+#define SCAN_BINS 12              // 방향 재기: 30도씩 12칸
+#define SCAN_MIN_SPREAD 4         // 가장 센 쪽과 약한 쪽 차이가 이 dB 이상이어야 화살표 표시
