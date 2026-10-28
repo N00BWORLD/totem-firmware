@@ -53,6 +53,7 @@ uint8_t calStat;
 bool calSaved;
 float batV;
 uint8_t batPct;
+bool charging;
 
 // ---- 내 위치 (GPS, 안 잡히면 폰이 빌려준 위치) ----
 bool myFix, usingPhone;
@@ -69,6 +70,7 @@ uint32_t frMs;
 int16_t frRssi;
 int32_t frLat, frLon;
 uint8_t frSats, frBat;
+bool frCharging;
 
 // ---- 같이 쓰는 만남 장소 ----
 bool meetSet;
@@ -169,7 +171,7 @@ void updateStatus() {
   uint32_t age = frSeen ? (millis() - frMs) / 1000 : 0;
   b[0] = STATUS_VER;
   b[1] = (myFix ? SF_MYFIX : 0) | (frSeen ? SF_SEEN : 0) | (frFix ? SF_FRFIX : 0) | (meetSet ? SF_MEET : 0) |
-         (bnoOk ? SF_COMPASS : 0) | (usingPhone ? SF_PHONE : 0);
+         (bnoOk ? SF_COMPASS : 0) | (usingPhone ? SF_PHONE : 0) | (charging ? SF_CHARGING : 0);
   put32(b + 2, myLat);
   put32(b + 6, myLon);
   put16(b + 10, (uint16_t)lroundf(headingDeg) % 360);
@@ -189,7 +191,8 @@ void updateStatus() {
   put16(b + 39, farM);
   b[41] = screenMin;
   // 42~: 실내 찾기
-  b[42] = (finding() ? FF_FINDING : 0) | (friendFinding() ? FF_FRIEND_FINDING : 0) | (scanReady ? FF_SCAN_READY : 0);
+  b[42] = (finding() ? FF_FINDING : 0) | (friendFinding() ? FF_FRIEND_FINDING : 0) | (scanReady ? FF_SCAN_READY : 0) |
+          (frSeen && frCharging ? FF_FRIEND_CHARGING : 0);
   put16(b + 43, (uint16_t)(int16_t)lroundf(rssiAvg));
   b[45] = (uint8_t)trend;
   put16(b + 46, scanDir);
@@ -245,7 +248,8 @@ void sendBeacon() {
   Payload p{};
   p.magic = 'T';
   p.ver = PAYLOAD_VER;
-  p.flags = (myFix ? PF_FIX : 0) | (meetSet ? PF_MEET : 0) | (usingPhone ? PF_PHONE : 0) | (finding() ? PF_FIND : 0);
+  p.flags = (myFix ? PF_FIX : 0) | (meetSet ? PF_MEET : 0) | (usingPhone ? PF_PHONE : 0) | (finding() ? PF_FIND : 0) |
+            (charging ? PF_CHARGING : 0);
   p.acc = myAcc;
   memcpy(p.name, myName, NAME_LEN);
   p.sats = gps.sats;
@@ -352,6 +356,7 @@ void onFriend(uint16_t sid, const Payload &p, float rssi) {
   }
   frSats = p.sats;
   frBat = p.bat;
+  frCharging = p.flags & PF_CHARGING;
 
   // 만남 장소: 버전이 더 새로운 쪽을 따름
   if ((int16_t)(p.meetVer - meetVer) > 0) {
@@ -397,17 +402,39 @@ void readBattery() {
   uint32_t mv = 0;
   for (int i = 0; i < 8; i++) mv += analogReadMilliVolts(PIN_BAT_ADC);
   digitalWrite(PIN_BAT_CTRL, LOW);
-  batV = mv / 8.0f * BAT_DIVIDER / 1000.0f;
+  float v = mv / 8.0f * BAT_DIVIDER / 1000.0f;
+  uint32_t now = millis();
+
+  // 충전기를 꽂으면 전압이 갑자기 올라가고(충전 전압), 빼면 갑자기 내려감.
+  // 충전 중 전압으로 %를 매기면 뺀 순간 확 닳은 것처럼 보이므로 충전 중엔 %를 안 믿음.
+  static float avg = 0;
+  static uint32_t settleUntil = 0;
+  if (avg == 0) avg = v;
+  if (v > avg + BAT_JUMP_V) charging = true;
+  else if (v < avg - BAT_JUMP_V) {
+    charging = false;
+    settleUntil = now + BAT_SETTLE_MS;  // 뺀 직후 전압이 자리 잡을 때까지 기다림
+  }
+  if (fabsf(v - avg) > BAT_JUMP_V) avg = v;  // 꽂거나 뺀 순간엔 평균을 새로 시작
+  else avg += (v - avg) * 0.2f;              // 무선 송신 등으로 잠깐 처지는 것은 평균으로 무시
+  batV = avg;
+  if (charging || (int32_t)(now - settleUntil) < 0) return;  // %는 마지막 값 유지
+
   static const float V[] = {3.30, 3.50, 3.60, 3.70, 3.75, 3.80, 3.85, 3.90, 4.00, 4.10, 4.20};
   static const uint8_t P[] = {0, 5, 10, 20, 30, 40, 50, 60, 75, 90, 100};
-  if (batV <= V[0]) batPct = 0;
-  else if (batV >= V[10]) batPct = 100;
-  else
+  uint8_t pct = 0;
+  if (batV >= V[10]) pct = 100;
+  else if (batV > V[0])
     for (int i = 1; i < 11; i++)
       if (batV < V[i]) {
-        batPct = P[i - 1] + (P[i] - P[i - 1]) * (batV - V[i - 1]) / (V[i] - V[i - 1]);
+        pct = P[i - 1] + (P[i] - P[i - 1]) * (batV - V[i - 1]) / (V[i] - V[i - 1]);
         break;
       }
+  // 충전 안 할 때 %는 오르지 않음 (오르락내리락 방지). 충전이 끝난 직후엔 새 값 그대로
+  static bool known = false;
+  if (!known || settleUntil || pct < batPct) batPct = pct;
+  known = true;
+  settleUntil = 0;
 }
 
 void saveCalibration() {
@@ -623,6 +650,26 @@ void drawArrow(int cx, int cy, int r, float deg) {
   oled.drawTriangle(px(a, r), py(a, r), px(a - side, r * 0.6f), py(a - side, r * 0.6f), px(a, -r * 0.2f), py(a, -r * 0.2f));
 }
 
+// 방향이 대략일 때: 화살표 대신 ±half도 부채꼴 (넓을수록 방향이 불확실)
+void drawWedge(int cx, int cy, int r, float deg, float half) {
+  if (half < WEDGE_MIN_DEG) {
+    drawArrow(cx, cy, r, deg);
+    return;
+  }
+  half = min(half, 90.0f);
+  oled.drawCircle(cx, cy, r + 2);
+  int n = max(2, (int)ceilf(half * 2 / 10));  // 10도마다 삼각형 하나
+  float a0 = (deg - half) * DEG_TO_RAD, step = half * 2 / n * DEG_TO_RAD;
+  for (int i = 0; i < n; i++) {
+    float a = a0 + step * i, b = a + step;
+    oled.drawTriangle(cx, cy, cx + lroundf(r * sinf(a)), cy - lroundf(r * cosf(a)),
+                      cx + lroundf(r * sinf(b)), cy - lroundf(r * cosf(b)));
+  }
+}
+
+// 거리 d에서 위치 오차가 err이면 방향은 ±asin(err/d)만큼 틀릴 수 있음
+float spreadDeg(float err, float d) { return err >= d ? 90 : asinf(err / d) * RAD_TO_DEG; }
+
 // 맨 위 줄: 내 이름 | 찾는 중, BLE, 폰 위치, 배터리
 void drawHeader() {
   char s[24];
@@ -630,6 +677,8 @@ void drawHeader() {
   oled.setFont(FONT_SMALL);
   snprintf(s, sizeof(s), "%s%s%s %d%%", finding() || friendFinding() ? "FIND " : "", bleConnected ? "BLE " : "",
            usingPhone ? "PH " : "", batPct);
+  if (charging) snprintf(s, sizeof(s), "%s%s%sCHG", finding() || friendFinding() ? "FIND " : "", bleConnected ? "BLE " : "",
+                         usingPhone ? "PH " : "");
   oled.drawStr(128 - oled.getStrWidth(s), 9, s);
   oled.drawHLine(0, 13, 128);
 }
@@ -654,7 +703,7 @@ void drawFriendPage() {
     ko(0, 43, s);
     ko(0, 58, "실내 찾기로 찾아보세요");
   } else if (located) {
-    drawArrow(28, 40, 19, brg - (bnoOk ? headingDeg : 0));
+    drawWedge(28, 40, 19, brg - (bnoOk ? headingDeg : 0), spreadDeg(myAcc + frAcc, d));
     fmtDist(s, sizeof(s), d);
     oled.setFont(FONT_BIG);
     oled.drawStr(58, 36, s);
@@ -699,7 +748,7 @@ void drawFindPage() {
 
   // 왼쪽: 방향을 알면 화살표, 아니면 잰 방향 표시 (12칸)
   if (scanReady && scanSpread >= SCAN_MIN_SPREAD) {
-    drawArrow(28, 40, 19, scanDir - headingDeg);
+    drawWedge(28, 40, 19, scanDir - headingDeg, SCAN_WEDGE_DEG);  // 신호로 잰 방향은 늘 대략
   } else {
     oled.drawCircle(28, 40, 3);
     for (int i = 0; i < SCAN_BINS; i++) {
@@ -776,9 +825,11 @@ void drawCompassPage() {
 
 void drawSystemPage() {
   char s[40];
-  snprintf(s, sizeof(s), "배터리 %.2fV %d%%", batV, batPct);
+  if (charging) snprintf(s, sizeof(s), "배터리 %.2fV 충전 중", batV);
+  else snprintf(s, sizeof(s), "배터리 %.2fV %d%%", batV, batPct);
   ko(0, 26, s);
-  snprintf(s, sizeof(s), "LoRa %s  상대 %d%%", loraOk ? "정상" : "오류", frSeen ? frBat : 0);
+  if (frSeen && frCharging) snprintf(s, sizeof(s), "LoRa %s  상대 충전 중", loraOk ? "정상" : "오류");
+  else snprintf(s, sizeof(s), "LoRa %s  상대 %d%%", loraOk ? "정상" : "오류", frSeen ? frBat : 0);
   ko(0, 39, s);
   snprintf(s, sizeof(s), "%s %s", bleName, bleConnected ? "연결됨" : "대기");
   ko(0, 51, s);

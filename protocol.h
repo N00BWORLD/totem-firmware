@@ -24,7 +24,7 @@ struct __attribute__((packed)) Payload {
 static_assert(sizeof(Payload) == 40, "payload size");
 
 #define PAYLOAD_VER 2
-enum { PF_FIX = 1, PF_MEET = 2, PF_PHONE = 4, PF_FIND = 8 };  // PF_FIND: 실내 찾기 중 (상대도 1초마다 송신)
+enum { PF_FIX = 1, PF_MEET = 2, PF_PHONE = 4, PF_FIND = 8, PF_CHARGING = 16 };  // PF_FIND: 실내 찾기 중 (상대도 1초마다 송신), PF_CHARGING: 충전 중
 
 #define FRAME_HDR 11
 #define FRAME_TAG 8
@@ -40,10 +40,10 @@ enum { PF_FIX = 1, PF_MEET = 2, PF_PHONE = 4, PF_FIND = 8 };  // PF_FIND: 실내
 #define STATUS_VER 4
 
 // 찾기 플래그 (42번 바이트)
-enum { FF_FINDING = 1, FF_FRIEND_FINDING = 2, FF_SCAN_READY = 4 };
+enum { FF_FINDING = 1, FF_FRIEND_FINDING = 2, FF_SCAN_READY = 4, FF_FRIEND_CHARGING = 8 };
 
 // 상태 플래그 (1번 바이트)
-enum { SF_MYFIX = 1, SF_SEEN = 2, SF_FRFIX = 4, SF_MEET = 8, SF_COMPASS = 16, SF_PHONE = 64 };
+enum { SF_MYFIX = 1, SF_SEEN = 2, SF_FRFIX = 4, SF_MEET = 8, SF_COMPASS = 16, SF_PHONE = 64, SF_CHARGING = 128 };
 
 // 명령 (첫 바이트)
 enum {

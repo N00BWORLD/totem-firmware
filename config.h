@@ -3,7 +3,7 @@
 // 아래 핀은 실제 보드에서 tools/probe 스케치로 확인한 값입니다.
 // 배선이 다르면 tools/probe 를 올려서 핀을 찾은 뒤 여기만 고치면 됩니다.
 
-#define FW_VERSION "4.1"
+#define FW_VERSION "4.2"
 
 // 보드
 #define PIN_VEXT 36       // LOW = Vext 켜짐 (OLED, GPS, BNO055 전원)
@@ -12,6 +12,8 @@
 #define PIN_BAT_ADC 1
 #define PIN_BAT_CTRL 37   // HIGH일 때 배터리 전압을 읽음 (V3.1 이상. LOW면 0V로 나옴)
 #define BAT_DIVIDER 4.9f
+#define BAT_JUMP_V 0.08f          // 이만큼 갑자기 오르면 충전기 꽂음, 내리면 뺌
+#define BAT_SETTLE_MS 60000       // 충전기를 뺀 뒤 전압이 자리 잡는 시간
 
 // 보드 내장 OLED (SSD1306 128x64, I2C 0x3C)
 #define PIN_OLED_SDA 17
@@ -60,4 +62,6 @@
 #define FIND_TX_INTERVAL_MS 1200  // 찾는 중에는 양쪽 다 이 간격으로 송신
 #define FIND_DURATION_MS 180000   // 3분 뒤 자동으로 끝 (앱이 켜 두면 계속 연장)
 #define SCAN_BINS 12              // 방향 재기: 30도씩 12칸
-#define SCAN_MIN_SPREAD 4         // 가장 센 쪽과 약한 쪽 차이가 이 dB 이상이어야 화살표 표시
+#define WEDGE_MIN_DEG 10          // 방향 오차가 이보다 작으면 부채꼴 대신 화살표
+#define SCAN_WEDGE_DEG 30         // 신호 세기로 잰 방향의 부채꼴 폭 (±도)
+#define SCAN_MIN_SPREAD 4        // 가장 센 쪽과 약한 쪽 차이가 이 dB 이상이어야 화살표 표시
