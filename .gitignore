@@ -1,0 +1,9 @@
+# shared LoRa key
+secrets.h
+
+# build output
+build/
+.pio/
+*.bin
+*.elf
+*.map
