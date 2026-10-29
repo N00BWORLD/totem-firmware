@@ -83,7 +83,7 @@ Arduino IDE 2.x 또는 [arduino-cli](https://arduino.github.io/arduino-cli/)를 
 - 지역은 [`config.h`](config.h)의 `REGION_US` / `REGION_KR` 중 하나 (두 토템이 같아야 함). sync word 0x12, CR 4/5. 보내기 전에 채널이 비었는지 확인(CAD)
   | 지역 | 주파수 | 대역폭 | SF | 출력 |
   |---|---|---|---|---|
-  | 미국 (기본) | 919.0 MHz | 500 kHz | 11 | 22 dBm |
+  | 미국 (기본) | 919.0 MHz | 500 kHz | 11 | 17 dBm |
   | 한국 | 922.1 MHz | 125 kHz | 9 | 13 dBm |
 - 15~18초마다 한 번 송신 (배터리 절약). 메시지를 보내거나 만남 장소를 바꾸면 바로 송신. 어느 한쪽이라도 실내 찾기 중이면 둘 다 1.2~1.6초마다
 - 59바이트 프레임: 헤더 11 + 암호문 40 + 태그 8 (v4.1부터. v4.0과는 서로 안 보임). 자세한 형식은 [`protocol.h`](protocol.h)

@@ -3,7 +3,7 @@
 // 아래 핀은 실제 보드에서 tools/probe 스케치로 확인한 값입니다.
 // 배선이 다르면 tools/probe 를 올려서 핀을 찾은 뒤 여기만 고치면 됩니다.
 
-#define FW_VERSION "4.5"
+#define FW_VERSION "4.6"
 
 // 보드
 #define PIN_VEXT 36       // LOW = Vext 켜짐 (OLED, GPS, BNO055 전원)
@@ -47,7 +47,7 @@
 #define LORA_FREQ 919.0f
 #define LORA_BW 500.0f
 #define LORA_SF 11
-#define LORA_POWER 22     // dBm, SX1262 최대 (FCC 한도 30 dBm, 안테나 6 dBi 이하)
+#define LORA_POWER 17     // dBm. 22(최대)에서 버튼 누를 때 재시작이 있어 낮춤 (FCC 한도 30 dBm)
 #elif defined(REGION_KR)
 // 920.9~923.3 MHz, 200 kHz 간격. 922.1 MHz는 채널 위에 있음.
 #define LORA_FREQ 922.1f
