@@ -17,7 +17,7 @@
 
 | 부품 | 비고 |
 |---|---|
-| Heltec WiFi LoRa 32 **V3.1 / V3.2** | ESP32-S3 + SX1262 + OLED 내장. 한국은 **863-928MHz** 버전 |
+| Heltec WiFi LoRa 32 **V3.1 / V3.2** | ESP32-S3 + SX1262 + OLED 내장. 미국·한국은 **863-928MHz** 버전 |
 | BNO055 나침반 모듈 | I2C (Adafruit 등) |
 | GPS 모듈 | NMEA 출력 9600bps (u-blox NEO-6M/M8N 등) |
 | 리튬폴리머 배터리 3.7V | 보드 배터리 커넥터(JST 1.25) |
@@ -80,10 +80,14 @@ Arduino IDE 2.x 또는 [arduino-cli](https://arduino.github.io/arduino-cli/)를 
 다른 앱이나 펌웨어를 만들 때 참고하세요. 모든 숫자는 little-endian입니다.
 
 ### LoRa (토템 ↔ 토템)
-- 922.1 MHz, BW 125 kHz, SF9, CR 4/5, sync word 0x12, 13 dBm. 보내기 전에 채널이 비었는지 확인(CAD)
+- 지역은 [`config.h`](config.h)의 `REGION_US` / `REGION_KR` 중 하나 (두 토템이 같아야 함). sync word 0x12, CR 4/5. 보내기 전에 채널이 비었는지 확인(CAD)
+  | 지역 | 주파수 | 대역폭 | SF | 출력 |
+  |---|---|---|---|---|
+  | 미국 (기본) | 919.0 MHz | 500 kHz | 11 | 22 dBm |
+  | 한국 | 922.1 MHz | 125 kHz | 9 | 13 dBm |
 - 5~6.5초마다 한 번 송신. 메시지를 보내거나 만남 장소를 바꾸면 바로 송신. 어느 한쪽이라도 실내 찾기 중이면 둘 다 1.2~1.6초마다
 - 59바이트 프레임: 헤더 11 + 암호문 40 + 태그 8 (v4.1부터. v4.0과는 서로 안 보임). 자세한 형식은 [`protocol.h`](protocol.h)
-- 다른 나라에서 쓰려면 [`config.h`](config.h)의 주파수와 출력을 그 나라 규정에 맞게 바꾸세요.
+- 다른 나라에서 쓰려면 [`config.h`](config.h)에 그 나라 규정에 맞는 지역을 추가하세요.
 
 ### BLE (토템 ↔ 앱)
 서비스 `6e7a0001-7c3a-4b8e-9f2d-544f54454d31`

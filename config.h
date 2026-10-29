@@ -3,7 +3,7 @@
 // 아래 핀은 실제 보드에서 tools/probe 스케치로 확인한 값입니다.
 // 배선이 다르면 tools/probe 를 올려서 핀을 찾은 뒤 여기만 고치면 됩니다.
 
-#define FW_VERSION "4.2"
+#define FW_VERSION "4.3"
 
 // 보드
 #define PIN_VEXT 36       // LOW = Vext 켜짐 (OLED, GPS, BNO055 전원)
@@ -35,14 +35,27 @@
 #define LORA_RST 12
 #define LORA_BUSY 13
 
-// 한국 KR920 대역 (920.9~923.3 MHz, 200 kHz 간격). 922.1 MHz는 채널 위에 있음.
-// 다른 나라에서 쓰면 그 나라에서 허용된 주파수와 출력으로 바꾸세요.
+// 쓰는 나라에 맞게 하나만 고르세요. 두 토템이 같아야 서로 통신됨.
+#define REGION_US  // 미국 (FCC Part 15)
+// #define REGION_KR  // 한국 (KR920)
+
+#if defined(REGION_US)
+// 902~928 MHz. 한 채널에 고정하려면 대역폭 500 kHz(디지털 변조 규정) → 최대 30 dBm.
+// SF11/BW500은 SF9/BW125와 송신 시간이 같고 감도는 약 1 dB 낮지만, 출력이 9 dB 높아 더 멀리 감.
+// 919.0 MHz: LoRaWAN US915 채널(902.3~914.9 올림, 923.3~927.5 내림) 사이의 빈 곳
+#define LORA_FREQ 919.0f
+#define LORA_BW 500.0f
+#define LORA_SF 11
+#define LORA_POWER 22     // dBm, SX1262 최대 (FCC 한도 30 dBm, 안테나 6 dBi 이하)
+#elif defined(REGION_KR)
+// 920.9~923.3 MHz, 200 kHz 간격. 922.1 MHz는 채널 위에 있음.
 #define LORA_FREQ 922.1f
 #define LORA_BW 125.0f
 #define LORA_SF 9
+#define LORA_POWER 13     // dBm, KR920 한도(14 dBm) 아래로
+#endif
 #define LORA_CR 5
 #define LORA_SYNC 0x12    // 사설 네트워크
-#define LORA_POWER 13     // dBm, KR920 한도(14 dBm) 아래로
 #define LORA_PREAMBLE 8
 #define LORA_TCXO 1.8f
 
