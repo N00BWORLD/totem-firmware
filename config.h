@@ -3,7 +3,7 @@
 // 아래 핀은 실제 보드에서 tools/probe 스케치로 확인한 값입니다.
 // 배선이 다르면 tools/probe 를 올려서 핀을 찾은 뒤 여기만 고치면 됩니다.
 
-#define FW_VERSION "4.3"
+#define FW_VERSION "4.4"
 
 // 보드
 #define PIN_VEXT 36       // LOW = Vext 켜짐 (OLED, GPS, BNO055 전원)
@@ -59,8 +59,8 @@
 #define LORA_PREAMBLE 8
 #define LORA_TCXO 1.8f
 
-#define TX_INTERVAL_MS 5000
-#define TX_JITTER_MS 1500
+#define TX_INTERVAL_MS 15000      // 배터리 절약. 찾는 중에는 FIND_TX_INTERVAL_MS
+#define TX_JITTER_MS 3000         // 두 토템이 같은 순간에 보내지 않게
 
 // 나침반
 #define MAG_DECLINATION -8.5f  // 한국은 편각 약 8.5도 서편: 진북 = 자북 + 편각

@@ -714,7 +714,7 @@ void drawFriendPage() {
     if (!bnoOk) ko(92, 61, "북=위");
   } else {
     // 한쪽이라도 GPS가 없으면 신호 세기로 찾기
-    ko(0, 28, age < 20 ? "신호 세기" : "마지막 신호");
+    ko(0, 28, age < 40 ? "신호 세기" : "마지막 신호");
     ko(0, 44, signalWord(frRssi));
     int bars = constrain(map(frRssi, -120, -40, 0, 5), 0, 5);
     for (int i = 0; i < 5; i++) {
