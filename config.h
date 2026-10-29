@@ -3,7 +3,7 @@
 // 아래 핀은 실제 보드에서 tools/probe 스케치로 확인한 값입니다.
 // 배선이 다르면 tools/probe 를 올려서 핀을 찾은 뒤 여기만 고치면 됩니다.
 
-#define FW_VERSION "4.4"
+#define FW_VERSION "4.5"
 
 // 보드
 #define PIN_VEXT 36       // LOW = Vext 켜짐 (OLED, GPS, BNO055 전원)
@@ -14,6 +14,7 @@
 #define BAT_DIVIDER 4.9f
 #define BAT_JUMP_V 0.08f          // 이만큼 갑자기 오르면 충전기 꽂음, 내리면 뺌
 #define BAT_SETTLE_MS 60000       // 충전기를 뺀 뒤 전압이 자리 잡는 시간
+#define BAT_UNPLUG_V 0.04f        // 충전 중 최고 전압보다 이만큼 낮게 30초면 충전기 뺀 것
 
 // 보드 내장 OLED (SSD1306 128x64, I2C 0x3C)
 #define PIN_OLED_SDA 17
@@ -61,6 +62,13 @@
 
 #define TX_INTERVAL_MS 15000      // 배터리 절약. 찾는 중에는 FIND_TX_INTERVAL_MS
 #define TX_JITTER_MS 3000         // 두 토템이 같은 순간에 보내지 않게
+
+// 배터리 절약
+#define CPU_MHZ 80                // BLE가 되는 최저 속도
+#define LOOP_IDLE_MS 10
+#define SCREEN_MIN_DEFAULT 1      // 화면 자동 꺼짐 (분, 0 = 안 꺼짐). 앱에서 바꾼 값이 있으면 그 값
+#define BLE_ADV_MIN 800           // x0.625 ms = 0.5초
+#define BLE_ADV_MAX 1600          // 1초
 
 // 나침반
 #define MAG_DECLINATION -8.5f  // 한국은 편각 약 8.5도 서편: 진북 = 자북 + 편각

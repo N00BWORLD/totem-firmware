@@ -156,6 +156,8 @@ void setupBle() {
   sr.setName(bleName);  // 128비트 UUID와 이름이 한 패킷에 안 들어가서 이름은 스캔 응답에
   adv->setAdvertisementData(ad);
   adv->setScanResponseData(sr);
+  adv->setMinInterval(BLE_ADV_MIN);  // 광고를 덜 자주 (배터리 절약, 폰이 찾는 데 1초 안팎)
+  adv->setMaxInterval(BLE_ADV_MAX);
   BLEDevice::startAdvertising();
 }
 
@@ -415,12 +417,26 @@ void readBattery() {
     charging = false;
     settleUntil = now + BAT_SETTLE_MS;  // 뺀 직후 전압이 자리 잡을 때까지 기다림
   }
+  // 다 찬 배터리에서 뺄 때는 전압이 조금만 내려감. 충전 중 전압은 계속 오르기만 하므로
+  // 최고값보다 확실히 낮은 상태가 30초 이어지면 뺀 것으로 봄
+  static float peak = 0;
+  static uint8_t lower = 0;
+  if (!charging) peak = 0, lower = 0;
+  else {
+    peak = max(peak, v);
+    lower = v < peak - BAT_UNPLUG_V ? lower + 1 : 0;
+    if (lower >= 3) {
+      charging = false;
+      settleUntil = now + BAT_SETTLE_MS;
+    }
+  }
   if (fabsf(v - avg) > BAT_JUMP_V) avg = v;  // 꽂거나 뺀 순간엔 평균을 새로 시작
   else avg += (v - avg) * 0.2f;              // 무선 송신 등으로 잠깐 처지는 것은 평균으로 무시
   batV = avg;
   if (charging || (int32_t)(now - settleUntil) < 0) return;  // %는 마지막 값 유지
 
-  static const float V[] = {3.30, 3.50, 3.60, 3.70, 3.75, 3.80, 3.85, 3.90, 4.00, 4.10, 4.20};
+  // 다 찬 배터리도 충전기를 빼면 4.15V 안팎으로 내려와 쉼 → 4.15V 이상이면 100%
+  static const float V[] = {3.30, 3.50, 3.60, 3.70, 3.75, 3.80, 3.85, 3.90, 3.98, 4.07, 4.15};
   static const uint8_t P[] = {0, 5, 10, 20, 30, 40, 50, 60, 75, 90, 100};
   uint8_t pct = 0;
   if (batV >= V[10]) pct = 100;
@@ -430,9 +446,15 @@ void readBattery() {
         pct = P[i - 1] + (P[i] - P[i - 1]) * (batV - V[i - 1]) / (V[i] - V[i - 1]);
         break;
       }
-  // 충전 안 할 때 %는 오르지 않음 (오르락내리락 방지). 충전이 끝난 직후엔 새 값 그대로
+  // 내려갈 땐 바로, 올라갈 땐 5% 넘게 높은 값이 30초 이어질 때만 (오르락내리락 방지).
+  // 충전기를 꽂은 채로 켜서 '충전 중'을 못 알아챈 경우에도 결국 올라감
   static bool known = false;
-  if (!known || settleUntil || pct < batPct) batPct = pct;
+  static uint8_t higher = 0;
+  higher = pct > batPct + 5 ? higher + 1 : 0;
+  if (!known || settleUntil || pct < batPct || higher >= 3) {
+    batPct = pct;
+    higher = 0;
+  }
   known = true;
   settleUntil = 0;
 }
@@ -912,6 +934,7 @@ void printStatus() {
 
 // ================= setup / loop =================
 void setup() {
+  setCpuFrequencyMhz(CPU_MHZ);  // 240 → 80 MHz: 할 일이 많지 않아서 충분하고 전류가 크게 줆
   Serial.begin(115200);
   pinMode(PIN_VEXT, OUTPUT);
   digitalWrite(PIN_VEXT, LOW);
@@ -938,7 +961,7 @@ void setup() {
 
   prefs.begin("totem", true);
   farM = prefs.getUShort("farM", 0);
-  screenMin = prefs.getUChar("scrMin", 0);
+  screenMin = prefs.getUChar("scrMin", SCREEN_MIN_DEFAULT);
   snprintf(myName, sizeof(myName), "토템%02X%02X", mac[4], mac[5]);  // 이름을 정하기 전 기본값
   if (prefs.isKey("name")) prefs.getString("name", myName, sizeof(myName));
   prefs.end();
@@ -985,7 +1008,7 @@ void loop() {
   while (xQueueReceive(cmdQueue, &c, 0)) handleCmd(c);
   handleButton();
 
-  if (now - compassMs >= 50) {
+  if (now - compassMs >= (screenOn || finding() ? 50 : 500)) {  // 화면이 꺼져 있으면 나침반은 가끔만
     compassMs = now;
     readCompass();
   }
@@ -1020,4 +1043,5 @@ void loop() {
     printMs = now;
     printStatus();
   }
+  delay(LOOP_IDLE_MS);  // 쉬는 동안 CPU가 잠깐씩 잠 (GPS 9600bps는 UART 버퍼가 받아 둠)
 }
