@@ -845,6 +845,21 @@ void drawCompassPage() {
   ko(58, 61, calSaved ? "보정 저장됨" : "길게:보정저장");
 }
 
+// 마지막으로 다시 시작된 이유 (갑자기 꺼졌다 켜질 때 원인 찾기용)
+const char *resetWhy() {
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON: return "전원";
+    case ESP_RST_BROWNOUT: return "전압부족";
+    case ESP_RST_PANIC:
+    case ESP_RST_INT_WDT:
+    case ESP_RST_TASK_WDT:
+    case ESP_RST_WDT: return "오류";
+    case ESP_RST_SW: return "재시작";
+    case ESP_RST_DEEPSLEEP: return "절전";
+    default: return "기타";
+  }
+}
+
 void drawSystemPage() {
   char s[40];
   if (charging) snprintf(s, sizeof(s), "배터리 %.2fV 충전 중", batV);
@@ -855,7 +870,7 @@ void drawSystemPage() {
   ko(0, 39, s);
   snprintf(s, sizeof(s), "%s %s", bleName, bleConnected ? "연결됨" : "대기");
   ko(0, 51, s);
-  snprintf(s, sizeof(s), "펌웨어 %s", FW_VERSION);
+  snprintf(s, sizeof(s), "펌웨어 %s 시작:%s", FW_VERSION, resetWhy());
   ko(0, 63, s);
 }
 
