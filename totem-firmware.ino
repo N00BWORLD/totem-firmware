@@ -1280,8 +1280,30 @@ void setup() {
   nextTxMs = millis() + random(TX_INTERVAL_MS);
 }
 
+// USB 시리얼 명령 (앱 없이 설정할 때): "name 코코"
+void handleSerial() {
+  static char line[48];
+  static uint8_t n = 0;
+  while (Serial.available()) {
+    char ch = Serial.read();
+    if ((uint8_t)ch >= ' ') {  // 줄 끝이 아니면 모음 (한글 UTF-8 바이트는 0x80 이상)
+      if (n < sizeof(line) - 1) line[n++] = ch;
+      continue;
+    }
+    line[n] = 0;
+    if (n > 5 && !strncmp(line, "name ", 5)) {
+      Cmd c = {(uint8_t)min(n - 4, 1 + NAME_LEN), {CMD_NAME}};
+      memcpy(c.d + 1, line + 5, c.len - 1);
+      handleCmd(c);
+      Serial.printf("name=%s\n", myName);
+    }
+    n = 0;
+  }
+}
+
 void loop() {
   uint32_t now = millis();
+  handleSerial();
   static uint32_t compassMs, batMs, statusMs, drawMs, printMs;
 
   while (Serial1.available()) gps.feed(Serial1.read());
