@@ -1044,8 +1044,9 @@ void loop() {
     statusMs = now;
     updateStatus();
   }
-  if (alert && alert != 10 && now - alertMs > (alert == 4 ? 30000UL : ALERT_TIMEOUT_MS)) alert = 0;
-  if (screenOn && screenMin && !alert && now - lastActivity > screenMin * 60000UL) {
+  uint32_t t = millis();  // 버튼·수신으로 lastActivity/alertMs가 now보다 늦을 수 있음 (now로 빼면 음수 → 바로 꺼짐)
+  if (alert && alert != 10 && t - alertMs > (alert == 4 ? 30000UL : ALERT_TIMEOUT_MS)) alert = 0;
+  if (screenOn && screenMin && !alert && t - lastActivity > screenMin * 60000UL) {
     oled.setPowerSave(1);
     screenOn = false;
   }
