@@ -176,6 +176,9 @@ void setupBle() {
 }
 
 bool finding() { return findUntil && (int32_t)(millis() - findUntil) < 0; }
+// 상대 위치를 믿을 수 있는 시간 (초). 매너 모드는 비컨 간격이 길어서 늘림
+uint32_t friendValidS() { return manner ? max((uint32_t)FRIEND_VALID_S, (uint32_t)(MANNER_TX_INTERVAL_MS * 5 / 2 / 1000)) : FRIEND_VALID_S; }
+
 bool friendFinding() { return frFinding && frSeen && millis() - frMs < (manner ? 3 * MANNER_FIND_INTERVAL_MS + 3000 : 10000); }
 
 static void put16(uint8_t *b, uint16_t v) { memcpy(b, &v, 2); }
@@ -303,8 +306,10 @@ bool openMFrame(const uint8_t *frame, size_t len, uint8_t *body) {
   return r == 0;
 }
 
-// 매너 모드 LBT: LoRa 신호(CAD)도 없고 다른 전파도 MANNER_LBT_DBM보다 약할 때만 비었다고 봄
+// LBT: LoRa 신호(CAD)도 없고 다른 전파도 MANNER_LBT_DBM보다 약할 때만 비었다고 봄 (5ms 넘게 들음)
 bool channelFree() {
+  if (radioIrq) handleRadio();  // 다 받은 프레임부터 처리
+  if (radio.getIrqFlags() & RADIOLIB_SX126X_IRQ_HEADER_VALID) return false;  // 받는 중이면 끊지 않음 (CAD가 끊어 버림)
   int cad = radio.scanChannel();
   radioIrq = false;  // CAD 완료 IRQ를 받은 패킷으로 착각하지 않게
   radio.startReceive();
@@ -348,8 +353,8 @@ void adaptPower(int8_t snrOfMe) {
 // 비컨 뒤에 붙여 보낼 프레임: 만남 장소나 이름이 바뀌었으면 그것, 아니면 가끔 다시 (상대가 놓쳤을 때 대비)
 enum { MX_NONE, MX_MEET, MX_NAME };
 int extraKind(uint8_t n) {
-  if (meetVer != meetVerSent || (meetVer && n % 8 == 0)) return MX_MEET;
-  if (memcmp(myName, nameSent, NAME_LEN) || n % 16 == 4) return MX_NAME;
+  if (meetVer != meetVerSent || (meetVer && n % MANNER_EXTRA_EVERY == 0)) return MX_MEET;
+  if (memcmp(myName, nameSent, NAME_LEN) || n % (2 * MANNER_EXTRA_EVERY) == 4) return MX_NAME;
   return MX_NONE;
 }
 
@@ -375,50 +380,66 @@ size_t buildBeacon(uint8_t *f) {
   return sealMFrame((const uint8_t *)&b, sizeof(b), f);
 }
 
-// 매너 모드 한 프레임 송신. 시간 예산이 없거나 채널이 계속 바쁘면 보내지 않고 false
-bool txManner(const uint8_t *f, size_t len) {
-  float air = radio.getTimeOnAir(len) / 1000.0f;
-  if (airBudgetMs < air) return false;
-  bool free = false;
-  for (int i = 0; i < 3 && !(free = channelFree()); i++) {
-    uint32_t until = millis() + random(200, 1000);  // 기다리는 동안 상대 프레임은 받음
-    while ((int32_t)(millis() - until) < 0) {
-      handleRadio();
-      delay(5);
-    }
+// 송신 전 LBT (두 모드 공통): 바쁘면 잠깐 기다렸다 다시 보고, 3번 다 바쁘면 false (이번 차례는 건너뜀)
+// 기다리는 동안에도 상대 프레임은 받고 GPS도 읽음
+void idleWait(uint32_t ms) {
+  uint32_t until = millis() + ms;
+  while ((int32_t)(millis() - until) < 0) {
+    while (Serial1.available()) gps.feed(Serial1.read());
+    handleRadio();
+    delay(5);
   }
-  if (!free) return false;
+}
+
+// airMs: 한 프레임 송신 시간. 상대 프레임이 끝날 만큼 기다렸다 다시 봄
+bool waitChannel(uint32_t airMs) {
+  uint32_t lo = max((uint32_t)200, airMs);
+  for (int i = 0; i < 3; i++) {
+    if (channelFree()) return true;
+    idleWait(random(lo, 2 * lo));
+  }
+  return false;
+}
+
+// 매너 모드 한 프레임 송신. 시간 예산이 없거나 채널이 계속 바쁘면 보내지 않고 false
+bool txManner(size_t (*build)(uint8_t *)) {
+  const size_t maxLen = MF_HDR + sizeof(MBeacon) + MF_TAG;  // 가장 긴 프레임 기준으로 예산 확인
+  float air = radio.getTimeOnAir(maxLen) / 1000.0f;
+  if (airBudgetMs < air) return false;
+  if (!waitChannel(air)) return false;
+  uint8_t f[maxLen];
+  size_t len = build(f);  // LBT 뒤에 만듦: 기다리는 동안 받은 메시지의 확인(ack)까지 실림
+  if (!len) return false;
   radio.setOutputPower(txPower);
   int st = radio.transmit(f, len);
-  airBudgetMs -= air;
+  airBudgetMs -= radio.getTimeOnAir(len) / 1000.0f;
   radioIrq = false;
   radio.startReceive();
   return st == RADIOLIB_ERR_NONE;
 }
 
+int extraNow;  // 지금 보낼 덧붙임 프레임 종류 (buildExtraNow용)
+size_t buildExtraNow(uint8_t *f) { return buildExtra(extraNow, f); }
+
 // 매너 모드 송신: 비컨 하나 + 필요하면 만남 장소나 이름 하나
-void sendManner() {
-  if (!ivOk) return;
+bool sendManner() {
+  if (!ivOk) return false;
   uint32_t now = millis();
   airBudgetMs = min(AIR_BUDGET_MAX, airBudgetMs + (now - airRefillMs) * (MANNER_DUTY_PCT / 100.0f));
   airRefillMs = now;
   if (frSeen && now - frMs > 3UL * MANNER_TX_INTERVAL_MS) txPower = MANNER_POWER_MAX;  // 상대가 안 들리면 다시 최대로
   static uint8_t n;
+  if (!txManner(buildBeacon)) return false;
   n++;
-  uint8_t f[MF_HDR + NAME_LEN + MF_TAG];
-  size_t len = buildBeacon(f);
-  if (!len || !txManner(f, len)) return;
   sentSinceAdapt = true;
   int kind = extraKind(n);
-  if (kind == MX_NONE) return;
-  uint32_t until = millis() + 100;  // 연속 송신 사이 쉬는 시간 (남이 끼어들 틈). 그동안 받기는 함
-  while ((int32_t)(millis() - until) < 0) {
-    handleRadio();
-    delay(5);
-  }
-  if (!(len = buildExtra(kind, f)) || !txManner(f, len)) return;
+  if (kind == MX_NONE) return true;
+  idleWait(100);  // 연속 송신 사이 쉬는 시간 (한국 50ms 이상). 남이 끼어들 틈
+  extraNow = kind;
+  if (!txManner(buildExtraNow)) return true;
   if (kind == MX_MEET) meetVerSent = meetVer;  // 실제로 보낸 뒤에만 보냈다고 표시
   else memcpy(nameSent, myName, NAME_LEN);
+  return true;
 }
 
 void onMFrame(uint16_t sid, const uint8_t *body, size_t n, float rssi, float snr) {
@@ -462,8 +483,12 @@ void onMFrame(uint16_t sid, const uint8_t *body, size_t n, float rssi, float snr
 
 void urgentTx() { nextTxMs = millis() + 200 + random(400); }
 
-void sendBeacon() {
-  Payload p{};
+bool sendBeacon() {
+  bool clear = waitChannel(radio.getTimeOnAir(FRAME_LEN) / 1000);
+#if defined(REGION_KR)
+  if (!clear) return false;  // 한국 LBT: 채널이 바쁘면 보내지 않음
+#endif
+  Payload p{};  // LBT 뒤에 만듦: 기다리는 동안 받은 메시지의 확인(ack)까지 실림
   p.magic = 'T';
   p.ver = PAYLOAD_VER;
   p.flags = (myFix ? PF_FIX : 0) | (meetSet ? PF_MEET : 0) | (usingPhone ? PF_PHONE : 0) | (finding() ? PF_FIND : 0) |
@@ -481,14 +506,11 @@ void sendBeacon() {
   p.msgType = txMsgType;
   p.ackSeq = rxMsgSeq;
   uint8_t f[FRAME_LEN];
-  if (!sealFrame(p, f)) return;
-  for (int i = 0; i < 3; i++) {  // 보내기 전에 채널이 비었는지 확인 (LBT)
-    if (radio.scanChannel() != RADIOLIB_LORA_DETECTED) break;
-    delay(random(40, 160));
-  }
+  if (!sealFrame(p, f)) return false;
   radio.transmit(f, FRAME_LEN);
   radioIrq = false;
   radio.startReceive();
+  return true;
 }
 
 void raiseAlert(uint8_t kind);
@@ -751,7 +773,7 @@ void distBearing(int32_t la1, int32_t lo1, int32_t la2, int32_t lo2, float &d, f
 }
 
 bool friendDistance(float &d, float &brg) {
-  if (!myFix || !frSeen || !frFix || (millis() - frMs) / 1000 > FRIEND_VALID_S) return false;
+  if (!myFix || !frSeen || !frFix || (millis() - frMs) / 1000 > friendValidS()) return false;
   distBearing(myLat, myLon, frLat, frLon, d, brg);
   return true;
 }
@@ -985,7 +1007,7 @@ void drawFriendPage() {
     if (!bnoOk) ko(92, 61, "북=위");
   } else {
     // 한쪽이라도 GPS가 없으면 신호 세기로 찾기
-    ko(0, 28, age < 40 ? "신호 세기" : "마지막 신호");
+    ko(0, 28, age < (manner ? MANNER_TX_INTERVAL_MS / 1000 + 20 : 40) ? "신호 세기" : "마지막 신호");
     ko(0, 44, signalWord(frRssi));
     int bars = constrain(map(frRssi, -120, -40, 0, 5), 0, 5);
     for (int i = 0; i < 5; i++) {
@@ -1196,7 +1218,7 @@ void updateLed() {
 // 시리얼 모니터용 한 줄 상태 (영문 유지: 터미널 인코딩과 무관하게 보이도록)
 void printStatus() {
   Serial.printf("hdg=%.0f fix=%d sats=%d | friend seen=%d valid=%d rssi=%d | bat=%.2fV\n", headingDeg, myFix, gps.sats, frSeen,
-                frSeen && frFix && (millis() - frMs) / 1000 <= FRIEND_VALID_S, frRssi, batV);
+                frSeen && frFix && (millis() - frMs) / 1000 <= friendValidS(), frRssi, batV);
 }
 
 // ================= setup / loop =================
@@ -1257,6 +1279,7 @@ void setup() {
     else bno.start();
   }
 
+  Serial1.setRxBufferSize(4096);  // 매너 모드 3초 송신 동안 들어오는 NMEA를 담아 둠
   Serial1.begin(GPS_BAUD, SERIAL_8N1, PIN_GPS_RX, PIN_GPS_TX);
   if (PIN_GPS_TX >= 0) gpsPowerSave(Serial1);
   readBattery();
@@ -1294,12 +1317,18 @@ void loop() {
 
   if (findUntil && !finding()) stopFind();  // 3분 지남
   if (loraOk && (int32_t)(now - nextTxMs) >= 0) {
-    if (manner) sendManner();
-    else sendBeacon();
+    uint32_t before = nextTxMs;
+    bool sent = manner ? sendManner() : sendBeacon();
     bool fast = finding() || friendFinding();  // 한쪽이라도 찾는 중이면 둘 다 빠르게
     uint32_t fastMs = manner ? MANNER_FIND_INTERVAL_MS : FIND_TX_INTERVAL_MS;
     uint32_t slowMs = manner ? MANNER_TX_INTERVAL_MS : TX_INTERVAL_MS;
-    nextTxMs = millis() + (fast ? fastMs + random(400) : slowMs + random(TX_JITTER_MS));
+    if (nextTxMs != before) {
+      // 보내는 사이 받은 메시지 때문에 urgentTx가 잡혔으면 그대로 둠
+    } else if (!sent) {
+      nextTxMs = millis() + 1000 + random(2000);  // 채널이 바빠 못 보냈으면 곧 다시
+    } else {
+      nextTxMs = millis() + (fast ? fastMs + random(400) : slowMs + random(TX_JITTER_MS));
+    }
   }
   if (now - statusMs >= 500) {
     statusMs = now;

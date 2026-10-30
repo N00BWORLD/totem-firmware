@@ -3,7 +3,7 @@
 // 아래 핀은 실제 보드에서 tools/probe 스케치로 확인한 값입니다.
 // 배선이 다르면 tools/probe 를 올려서 핀을 찾은 뒤 여기만 고치면 됩니다.
 
-#define FW_VERSION "4.11"
+#define FW_VERSION "4.12"
 
 // 보드
 #define PIN_VEXT 36       // LOW = Vext 켜짐 (OLED, GPS, BNO055 전원)
@@ -55,17 +55,26 @@
 #define MANNER_SF 12
 #define MANNER_CR 8
 #define MANNER_POWER_MAX 22
+#define MANNER_TX_INTERVAL_MS 25000   // 앱은 40초 넘으면 신호 없음으로 봄
+#define MANNER_FIND_INTERVAL_MS 4000  // 실내 찾기 중
+#define MANNER_DUTY_PCT 2             // 한 시간 송신 시간 상한 (2% = 72초)
+#define MANNER_EXTRA_EVERY 8          // 만남 장소는 비컨 8번마다, 이름은 16번마다 다시 보냄
 #elif defined(REGION_KR)
 // 920.9~923.3 MHz, 200 kHz 간격. 922.1 MHz는 채널 위에 있음.
 #define LORA_FREQ 922.7f  // 922.1~922.5는 LoRaWAN 기본 채널이라 붐빔, 923.1은 Z-Wave
 #define LORA_BW 125.0f
 #define LORA_SF 9
 #define LORA_POWER 11     // dBm. 스틱 안테나 3dBi를 더해도 EIRP 14dBm (KR920 한도)
-// 장거리 매너 모드: SF10/BW125, 한 번 송신 약 0.37초 (짧은 프레임). CR을 올리면 0.4초를 넘어서 4/5 그대로
-#define MANNER_BW 125.0f
-#define MANNER_SF 10
+// 장거리 매너 모드: SF12/BW62.5, 한 번 송신 약 3초 (짧은 프레임).
+// 고시 제8조④6호 나목: LBT(5ms 이상, -65dBm 이하)를 하면 1회 4초 이내 + 50ms 이상 휴지. 0.4초는 LBT 안 쓰는 기기 기준
+#define MANNER_BW 62.5f
+#define MANNER_SF 12
 #define MANNER_CR 5
 #define MANNER_POWER_MAX 11
+#define MANNER_TX_INTERVAL_MS 60000   // 한 번에 3초라 간격을 넓힘 (앱은 40초 넘으면 "마지막 신호"로 표시)
+#define MANNER_FIND_INTERVAL_MS 10000 // 실내 찾기 중
+#define MANNER_DUTY_PCT 6             // 한 시간 송신 시간 상한 (6% = 216초, 1분 간격 비컨이 약 5%)
+#define MANNER_EXTRA_EVERY 16         // 한 번에 3초라 다시 보내기는 드물게
 #endif
 #define LORA_CR 5
 #define LORA_SYNC 0x12    // 사설 네트워크
@@ -73,10 +82,7 @@
 #define LORA_TCXO 1.8f
 
 // 장거리 매너 모드: 남이 쓰고 있으면 안 보내고, 짧게, 가끔, 필요한 만큼만 세게
-#define MANNER_TX_INTERVAL_MS 25000   // 앱은 40초 넘으면 신호 없음으로 봄
-#define MANNER_FIND_INTERVAL_MS 4000  // 실내 찾기 중
-#define MANNER_LBT_DBM -80            // 이보다 센 신호가 있으면 채널 사용 중
-#define MANNER_DUTY_PCT 2             // 한 시간 송신 시간 상한 (2% = 72초)
+#define MANNER_LBT_DBM -80            // 이보다 센 신호가 있으면 채널 사용 중 (한국 기준 -65보다 엄격)
 #define MANNER_POWER_MIN 0            // 상대가 잘 들리면 이만큼까지 낮춤
 
 #define TX_INTERVAL_MS 15000      // 배터리 절약. 찾는 중에는 FIND_TX_INTERVAL_MS
@@ -95,7 +101,7 @@
 
 // 시간
 #define PHONE_LOC_TTL_MS 15000   // 앱이 5초마다 다시 보냄
-#define FRIEND_VALID_S 60
+#define FRIEND_VALID_S 60  // 매너 모드는 비컨 간격의 2.5배 (friendValidS)
 #define ALERT_TIMEOUT_MS 60000
 
 // 실내 찾기
