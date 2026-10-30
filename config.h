@@ -3,7 +3,7 @@
 // 아래 핀은 실제 보드에서 tools/probe 스케치로 확인한 값입니다.
 // 배선이 다르면 tools/probe 를 올려서 핀을 찾은 뒤 여기만 고치면 됩니다.
 
-#define FW_VERSION "4.7"
+#define FW_VERSION "4.8"
 
 // 보드
 #define PIN_VEXT 36       // LOW = Vext 켜짐 (OLED, GPS, BNO055 전원)
@@ -28,6 +28,7 @@
 
 // GPS 모듈 (NMEA 출력)
 #define PIN_GPS_RX 6      // 보드 RX <- GPS TX
+#define PIN_GPS_TX -1     // 보드 TX -> GPS RX. 선을 이으면 GPS 절전 명령을 보냄 (-1 = 선 없음)
 #define GPS_BAUD 9600
 
 // SX1262

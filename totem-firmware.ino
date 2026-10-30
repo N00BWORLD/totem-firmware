@@ -468,8 +468,22 @@ void saveCalibration() {
   calSaved = true;
 }
 
-void readCompass() {
+// 화면도 꺼져 있고 찾는 중도 아니고 앱도 안 붙어 있으면 방향을 쓸 곳이 없으니 BNO055를 재움
+bool bnoAsleep;
+void updateCompassPower() {
   if (!bnoOk) return;
+  bool need = screenOn || finding() || bleConnected;
+  if (!need && !bnoAsleep) {
+    bno.suspend();
+    bnoAsleep = true;
+  } else if (need && bnoAsleep) {
+    bno.resume();
+    bnoAsleep = false;
+  }
+}
+
+void readCompass() {
+  if (!bnoOk || bnoAsleep) return;
   static uint32_t calMs;
   float h = bno.heading();
   if (h >= 0) headingDeg = fmodf(h + MAG_DECLINATION + HEADING_OFFSET + 720.0f, 360.0f);
@@ -1000,7 +1014,8 @@ void setup() {
     else bno.start();
   }
 
-  Serial1.begin(GPS_BAUD, SERIAL_8N1, PIN_GPS_RX, -1);
+  Serial1.begin(GPS_BAUD, SERIAL_8N1, PIN_GPS_RX, PIN_GPS_TX);
+  if (PIN_GPS_TX >= 0) gpsPowerSave(Serial1);
   readBattery();
 
   cmdQueue = xQueueCreate(8, sizeof(Cmd));
@@ -1054,6 +1069,7 @@ void loop() {
     drawMs = now;
     render();
   }
+  updateCompassPower();
   updateLed();
   if (now - printMs >= 2000) {
     printMs = now;

@@ -43,6 +43,21 @@ class Bno055 {
     return ok;
   }
 
+  // 화면이 꺼져 있을 때: 약 12mA → 0.04mA. 깨우면 NDOF로 돌아감 (보정값은 유지)
+  void suspend() {
+    configMode();
+    write8(0x3E, 0x02);
+  }
+  void resume() {
+    for (int i = 0; i < 3; i++) {  // 잠든 칩은 첫 I2C에 응답하지 않을 수 있어 확인하며 다시 씀
+      write8(0x3E, 0x00);
+      delay(10);
+      if (read8(0x3E) == 0x00) break;
+    }
+    configMode();
+    start();
+  }
+
   // 0~360, 자북 기준
   float heading() {
     uint8_t b[2];

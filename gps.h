@@ -1,6 +1,16 @@
 #pragma once
 #include <Arduino.h>
 
+// u-blox 절전 모드 (UBX-CFG-RXM lpMode=1). 보드 TX가 GPS RX에 이어져 있어야 함
+inline void gpsPowerSave(Stream &s) {
+  uint8_t m[] = {0xB5, 0x62, 0x06, 0x11, 0x02, 0x00, 0x08, 0x01, 0, 0};
+  for (int i = 2; i < 8; i++) {
+    m[8] += m[i];
+    m[9] += m[8];
+  }
+  s.write(m, sizeof(m));
+}
+
 // 작은 NMEA 파서: RMC(위치, 수신 여부)와 GGA(위성 수, HDOP)만 읽음
 class NmeaParser {
  public:
