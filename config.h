@@ -16,7 +16,7 @@
 #define BAT_SETTLE_MS 60000       // 충전기를 뺀 뒤 전압이 자리 잡는 시간
 #define BAT_UNPLUG_V 0.04f        // 충전 중 최고 전압보다 이만큼 낮게 30초면 충전기 뺀 것
 // 남은 시간·충전 시간 추정 (실측 전 추정값). 배터리 용량은 USB로 "bat 2000"처럼 바꿈
-#define BAT_MAH_DEFAULT 500
+#define BAT_MAH_DEFAULT 1000
 #define BAT_AVG_MA 70             // 평균 소비 전류 추정. 20분 넘게 쓰면 실제 줄어든 %로 다시 계산
 #define CHARGE_MA 300             // 보드 충전 전류 추정
 
