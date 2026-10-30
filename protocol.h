@@ -48,6 +48,14 @@ struct __attribute__((packed)) MMeet {
   uint8_t set;
 };
 static_assert(sizeof(MBeacon) == 13 && sizeof(MMeet) == 11 && NAME_LEN == 12, "manner frame sizes");
+// GPS가 안 잡힐 때 주변 와이파이 2개 (폰 앱이 위치 서비스에 물어봐서 좌표로 바꿈).
+// 본문 14바이트 → 프레임 25바이트: 장거리 모드에서 1회 4초 안에 들어가는 최대 길이
+#define WIFI_APS 2
+struct __attribute__((packed)) MWifi {
+  uint8_t bssid[WIFI_APS][6];  // 없으면 0
+  int8_t rssi[WIFI_APS];
+};
+static_assert(sizeof(MWifi) == 14, "wifi frame size");
 enum { MBF_FIX = 1, MBF_PHONE = 2, MBF_FIND = 4, MBF_CHARGING = 8 };
 #define MB_NO_SNR (-128)
 
@@ -56,8 +64,9 @@ enum { MBF_FIX = 1, MBF_PHONE = 2, MBF_FIND = 4, MBF_CHARGING = 8 };
 #define BLE_STATUS_UUID "6e7a0002-7c3a-4b8e-9f2d-544f54454d31"  // read/notify, STATUS_LEN 바이트
 #define BLE_CMD_UUID "6e7a0003-7c3a-4b8e-9f2d-544f54454d31"     // write
 
-// 0~41은 예전 앱과 같음. 42~53 실내 찾기, 54~65 내 이름, 66~77 상대 이름 (앱은 byteLength로 구분)
-#define STATUS_LEN 78
+// 0~41은 예전 앱과 같음. 42~53 실내 찾기, 54~65 내 이름, 66~77 상대 이름,
+// 78~94 상대 와이파이 (78 개수, 79~90 BSSID 6x2, 91~92 RSSI, 93~94 몇 초 전 u16) (앱은 byteLength로 구분)
+#define STATUS_LEN 95
 #define STATUS_VER 4
 
 // 찾기 플래그 (42번 바이트)

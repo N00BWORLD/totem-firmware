@@ -3,7 +3,7 @@
 // 아래 핀은 실제 보드에서 tools/probe 스케치로 확인한 값입니다.
 // 배선이 다르면 tools/probe 를 올려서 핀을 찾은 뒤 여기만 고치면 됩니다.
 
-#define FW_VERSION "4.16"
+#define FW_VERSION "4.17"
 
 // 보드
 #define PIN_VEXT 36       // LOW = Vext 켜짐 (OLED, GPS, BNO055 전원)
@@ -63,7 +63,7 @@
 #define MANNER_POWER_MIN 22           // 출력 고정 (상대가 잘 들려도 낮추지 않음)
 #define MANNER_TX_INTERVAL_MS 20000   // 20초 + 0~4초 랜덤 (TX_JITTER_MS). 한 번에 약 4초
 #define MANNER_FIND_INTERVAL_MS 10000 // 실내 찾기 중
-#define MANNER_DUTY_PCT 25            // 한 시간 송신 시간 상한 (25% = 900초, 22초 간격 비컨이 약 18%)
+#define MANNER_DUTY_PCT 30            // 한 시간 송신 시간 상한 (30%. 22초 간격 비컨 약 18% + GPS 없을 때 와이파이 약 6%)
 #define MANNER_EXTRA_EVERY 16         // 한 번에 4초라 다시 보내기는 드물게
 #elif defined(REGION_US)
 // 902~928 MHz. 한 채널에 고정하려면 대역폭 500 kHz(디지털 변조 규정) → 최대 30 dBm.
@@ -120,6 +120,10 @@
 #define SCREEN_MIN_DEFAULT 1      // 화면 자동 꺼짐 (분, 0 = 안 꺼짐). 앱에서 바꾼 값이 있으면 그 값
 #define BLE_ADV_MIN 800           // x0.625 ms = 0.5초
 #define BLE_ADV_MAX 1600          // 1초
+
+// 와이파이 위치 (GPS가 안 잡힐 때)
+#define WIFI_SCAN_MS 60000        // 스캔 간격
+#define WIFI_EVERY 3              // 비컨 3번에 한 번 와이파이 프레임을 덧붙임
 
 // 나침반
 #define MAG_DECLINATION -8.5f  // 한국은 편각 약 8.5도 서편: 진북 = 자북 + 편각

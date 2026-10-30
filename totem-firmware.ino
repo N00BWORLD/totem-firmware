@@ -13,6 +13,7 @@
 #include <BLE2902.h>
 #endif
 #include <esp_mac.h>
+#include <WiFi.h>
 #include "mbedtls/gcm.h"
 
 #include "config.h"
@@ -54,7 +55,9 @@ bool calSaved;
 float batV;
 uint8_t batPct;
 bool charging;
-bool dogMode;                  // 강아지 토템: 시스템(배터리) 화면만. USB로 "role dog" / "role person"
+MWifi myWifi, frWifi;          // 내가 스캔한 / 상대가 보낸 와이파이 (GPS 없을 때 위치용)
+uint32_t myWifiMs, frWifiMs;   // 0 = 없음
+bool dogMode;               // 강아지 토템: 시스템(배터리) 화면만. USB로 "role dog" / "role person"
 uint16_t batMah;               // 배터리 용량. USB로 "bat 500"
 uint32_t chgStartMs;           // 충전 시작 시각과 그때 %
 uint8_t chgStartPct;
@@ -227,6 +230,14 @@ void updateStatus() {
   put16(b + 52, frAcc);
   memcpy(b + 54, myName, NAME_LEN);
   memcpy(b + 66, frName, NAME_LEN);
+  // 78~: 상대 와이파이 (상대 GPS가 안 잡힐 때 폰 앱이 위치로 바꿈)
+  if (frWifiMs) {
+    for (int i = 0; i < WIFI_APS; i++)
+      if (frWifi.rssi[i]) b[78]++;
+    memcpy(b + 79, frWifi.bssid, sizeof(frWifi.bssid));
+    memcpy(b + 91, frWifi.rssi, sizeof(frWifi.rssi));
+    put16(b + 93, min((uint32_t)0xFFFF, (millis() - frWifiMs) / 1000));
+  }
   statusChar->setValue(b, STATUS_LEN);
   if (bleConnected) statusChar->notify();
 }
@@ -357,10 +368,12 @@ void adaptPower(int8_t snrOfMe) {
 }
 
 // 비컨 뒤에 붙여 보낼 프레임: 만남 장소나 이름이 바뀌었으면 그것, 아니면 가끔 다시 (상대가 놓쳤을 때 대비)
-enum { MX_NONE, MX_MEET, MX_NAME };
+enum { MX_NONE, MX_MEET, MX_NAME, MX_WIFI };
+bool wifiFresh() { return myWifiMs && millis() - myWifiMs < 3 * WIFI_SCAN_MS; }
 int extraKind(uint8_t n) {
   if (meetVer != meetVerSent || (meetVer && n % MANNER_EXTRA_EVERY == 0)) return MX_MEET;
   if (memcmp(myName, nameSent, NAME_LEN) || n % (2 * MANNER_EXTRA_EVERY) == 4) return MX_NAME;
+  if (!myFix && wifiFresh() && n % WIFI_EVERY == 1) return MX_WIFI;  // GPS가 없을 때만
   return MX_NONE;
 }
 
@@ -369,6 +382,7 @@ size_t buildExtra(int kind, uint8_t *f) {
     MMeet m{meetVer, meetLat, meetLon, (uint8_t)meetSet};
     return sealMFrame((const uint8_t *)&m, sizeof(m), f);
   }
+  if (kind == MX_WIFI) return sealMFrame((const uint8_t *)&myWifi, sizeof(myWifi), f);
   return sealMFrame((const uint8_t *)myName, NAME_LEN, f);
 }
 
@@ -409,7 +423,7 @@ bool waitChannel(uint32_t airMs) {
 
 // 매너 모드 한 프레임 송신. 시간 예산이 없거나 채널이 계속 바쁘면 보내지 않고 false
 bool txManner(size_t (*build)(uint8_t *)) {
-  const size_t maxLen = MF_HDR + sizeof(MBeacon) + MF_TAG;  // 가장 긴 프레임 기준으로 예산 확인
+  const size_t maxLen = MF_HDR + sizeof(MWifi) + MF_TAG;  // 가장 긴 프레임(와이파이) 기준으로 예산 확인
   float air = radio.getTimeOnAir(maxLen) / 1000.0f;
   if (airBudgetMs < air) {
     Serial.println("tx skip: budget");
@@ -451,7 +465,7 @@ bool sendManner() {
   extraNow = kind;
   if (!txManner(buildExtraNow)) return true;
   if (kind == MX_MEET) meetVerSent = meetVer;  // 실제로 보낸 뒤에만 보냈다고 표시
-  else memcpy(nameSent, myName, NAME_LEN);
+  else if (kind == MX_NAME) memcpy(nameSent, myName, NAME_LEN);
   return true;
 }
 
@@ -491,7 +505,51 @@ void onMFrame(uint16_t sid, const uint8_t *body, size_t n, float rssi, float snr
   } else if (n == NAME_LEN) {
     memcpy(frName, body, NAME_LEN);
     frName[NAME_LEN] = 0;
+  } else if (n == sizeof(MWifi)) {
+    memcpy(&frWifi, body, sizeof(frWifi));
+    frWifiMs = millis();
   }
+}
+
+// GPS가 안 잡히면 가끔 주변 와이파이를 스캔해 가장 센 2개를 기억 (비동기, 끝나면 와이파이 끔)
+void wifiScan() {
+  static uint32_t lastMs;
+  static bool scanning;
+  uint32_t now = millis();
+  if (scanning) {
+    int r = WiFi.scanComplete();
+    if (r == WIFI_SCAN_RUNNING) return;
+    scanning = false;
+    MWifi w{};
+    for (int i = 0; i < r; i++) {
+      const uint8_t *id = WiFi.BSSID(i);
+      int rssi = WiFi.RSSI(i);
+      // 폰 핫스팟(임의 MAC)과 위치 수집을 거부한 공유기(_nomap)는 뺌
+      if (!id || (id[0] & 0x02) || WiFi.SSID(i).endsWith("_nomap")) continue;
+      for (int k = 0; k < WIFI_APS; k++) {
+        if (w.rssi[k] && rssi <= w.rssi[k]) continue;
+        for (int j = WIFI_APS - 1; j > k; j--) {  // 센 순서로 끼워 넣기
+          memcpy(w.bssid[j], w.bssid[j - 1], 6);
+          w.rssi[j] = w.rssi[j - 1];
+        }
+        memcpy(w.bssid[k], id, 6);
+        w.rssi[k] = constrain(rssi, -127, -1);
+        break;
+      }
+    }
+    WiFi.scanDelete();
+    WiFi.mode(WIFI_OFF);
+    if (w.rssi[0]) {
+      myWifi = w;
+      myWifiMs = now;
+    }
+    return;
+  }
+  if (myFix || (lastMs && now - lastMs < WIFI_SCAN_MS)) return;
+  lastMs = now;
+  WiFi.mode(WIFI_STA);
+  scanning = WiFi.scanNetworks(true, false, false, 120) == WIFI_SCAN_RUNNING;
+  if (!scanning) WiFi.mode(WIFI_OFF);
 }
 
 void urgentTx() { nextTxMs = millis() + 200 + random(400); }
@@ -644,11 +702,11 @@ void handleRadio() {
   Serial.printf("rx len=%u st=%d rssi=%.0f snr=%.1f\n", (unsigned)n, st, rssi, snr);
   if (manner) {
     // 가장 긴 본문은 비컨(13바이트). 예전엔 이름(12)을 최대로 잡아 비컨이 모두 버려졌음
-    if (st != RADIOLIB_ERR_NONE || n > MF_HDR + sizeof(MBeacon) + MF_TAG || n < MF_HDR + MF_TAG || f[0] != netId) return;
+    if (st != RADIOLIB_ERR_NONE || n > MF_HDR + sizeof(MWifi) + MF_TAG || n < MF_HDR + MF_TAG || f[0] != netId) return;
     size_t body = n - MF_HDR - MF_TAG;
-    if (body != sizeof(MBeacon) && body != sizeof(MMeet) && body != NAME_LEN) return;
+    if (body != sizeof(MBeacon) && body != sizeof(MMeet) && body != NAME_LEN && body != sizeof(MWifi)) return;
     uint16_t sid = f[1] << 8 | f[2];
-    uint8_t b[max(sizeof(MBeacon), max(sizeof(MMeet), (size_t)NAME_LEN))];
+    uint8_t b[sizeof(MWifi)];  // 가장 긴 본문
     if (sid == myId || !openMFrame(f, n, b)) return;  // 키가 다르면 여기서 버려짐
     onMFrame(sid, b, body, rssi, snr);
     return;
@@ -1004,12 +1062,10 @@ float spreadDeg(float err, float d) { return err >= d ? 90 : asinf(err / d) * RA
 // 맨 위 줄: 내 이름 | 찾는 중, BLE, 폰 위치, 배터리
 void drawHeader() {
   char s[24];
-  ko(0, 11, myName);
+  ko(0, 11, myName);  // 이름 (강아지 토템은 보호자 전화번호를 넣어 둠)
   oled.setFont(FONT_SMALL);
-  snprintf(s, sizeof(s), "%s%s%s%s %d%%", manner ? "M " : "", finding() || friendFinding() ? "FIND " : "",
-           bleConnected ? "BLE " : "", usingPhone ? "PH " : "", batPct);
-  if (charging) snprintf(s, sizeof(s), "%s%s%s%sCHG", manner ? "M " : "", finding() || friendFinding() ? "FIND " : "",
-                         bleConnected ? "BLE " : "", usingPhone ? "PH " : "");
+  if (charging) strlcpy(s, "CHG", sizeof(s));
+  else snprintf(s, sizeof(s), "%d%%", batPct);
   oled.drawStr(128 - oled.getStrWidth(s), 9, s);
   oled.drawHLine(0, 13, 128);
 }
@@ -1339,6 +1395,7 @@ void loop() {
 
   while (Serial1.available()) gps.feed(Serial1.read());
   if (loraOk) handleRadio();
+  if (manner) wifiScan();  // 와이파이 위치는 장거리 모드(짧은 프레임)에서만 보냄
   Cmd c;
   while (xQueueReceive(cmdQueue, &c, 0)) handleCmd(c);
   handleButton();
