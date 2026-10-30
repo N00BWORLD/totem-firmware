@@ -405,13 +405,20 @@ bool waitChannel(uint32_t airMs) {
 bool txManner(size_t (*build)(uint8_t *)) {
   const size_t maxLen = MF_HDR + sizeof(MBeacon) + MF_TAG;  // 가장 긴 프레임 기준으로 예산 확인
   float air = radio.getTimeOnAir(maxLen) / 1000.0f;
-  if (airBudgetMs < air) return false;
-  if (!waitChannel(air)) return false;
+  if (airBudgetMs < air) {
+    Serial.println("tx skip: budget");
+    return false;
+  }
+  if (!waitChannel(air)) {
+    Serial.println("tx skip: channel busy");
+    return false;
+  }
   uint8_t f[maxLen];
   size_t len = build(f);  // LBT 뒤에 만듦: 기다리는 동안 받은 메시지의 확인(ack)까지 실림
   if (!len) return false;
   radio.setOutputPower(txPower);
   int st = radio.transmit(f, len);
+  Serial.printf("tx len=%u st=%d pwr=%d\n", (unsigned)len, st, txPower);
   airBudgetMs -= radio.getTimeOnAir(len) / 1000.0f;
   radioIrq = false;
   radio.startReceive();
@@ -628,8 +635,10 @@ void handleRadio() {
   float rssi = radio.getRSSI();
   float snr = radio.getSNR();
   radio.startReceive();
+  Serial.printf("rx len=%u st=%d rssi=%.0f snr=%.1f\n", (unsigned)n, st, rssi, snr);
   if (manner) {
-    if (st != RADIOLIB_ERR_NONE || n > MF_HDR + NAME_LEN + MF_TAG || n < MF_HDR + MF_TAG || f[0] != netId) return;
+    // 가장 긴 본문은 비컨(13바이트). 예전엔 이름(12)을 최대로 잡아 비컨이 모두 버려졌음
+    if (st != RADIOLIB_ERR_NONE || n > MF_HDR + sizeof(MBeacon) + MF_TAG || n < MF_HDR + MF_TAG || f[0] != netId) return;
     size_t body = n - MF_HDR - MF_TAG;
     if (body != sizeof(MBeacon) && body != sizeof(MMeet) && body != NAME_LEN) return;
     uint16_t sid = f[1] << 8 | f[2];
