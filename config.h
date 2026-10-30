@@ -3,7 +3,7 @@
 // 아래 핀은 실제 보드에서 tools/probe 스케치로 확인한 값입니다.
 // 배선이 다르면 tools/probe 를 올려서 핀을 찾은 뒤 여기만 고치면 됩니다.
 
-#define FW_VERSION "4.10"
+#define FW_VERSION "4.11"
 
 // 보드
 #define PIN_VEXT 36       // LOW = Vext 켜짐 (OLED, GPS, BNO055 전원)
@@ -48,7 +48,7 @@
 #define LORA_FREQ 919.0f
 #define LORA_BW 500.0f
 #define LORA_SF 11
-#define LORA_POWER 17     // dBm. 22(최대)에서 버튼 누를 때 재시작이 있어 낮춤 (FCC 한도 30 dBm)
+#define LORA_POWER 22     // dBm, 칩 최대 (FCC 한도 30 dBm). v4.6의 "버튼 재시작"은 화면 꺼짐 버그였음(v4.7에서 고침)
 // 장거리 매너 모드: FCC가 허용하는 범위에서 가장 멀리. SF12/BW500/CR4/8, 칩 최대 22dBm (FCC 한도 30dBm)
 // 한 번 송신 약 0.43초 (짧은 프레임). 상대가 잘 들리면 출력을 스스로 낮춤
 #define MANNER_BW 500.0f
