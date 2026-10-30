@@ -1395,7 +1395,8 @@ void loop() {
 
   while (Serial1.available()) gps.feed(Serial1.read());
   if (loraOk) handleRadio();
-  if (manner) wifiScan();  // 와이파이 위치는 장거리 모드(짧은 프레임)에서만 보냄
+  // 와이파이 위치는 강아지 토템만 (찾는 쪽은 폰 위치가 있음. 스캔이 블루투스 연결을 방해할 수 있음)
+  if (manner && dogMode) wifiScan();
   Cmd c;
   while (xQueueReceive(cmdQueue, &c, 0)) handleCmd(c);
   handleButton();
