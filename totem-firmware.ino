@@ -54,6 +54,12 @@ bool calSaved;
 float batV;
 uint8_t batPct;
 bool charging;
+bool dogMode;                  // 강아지 토템: 시스템(배터리) 화면만. USB로 "role dog" / "role person"
+uint16_t batMah;               // 배터리 용량. USB로 "bat 500"
+uint32_t chgStartMs;           // 충전 시작 시각과 그때 %
+uint8_t chgStartPct;
+uint32_t useStartMs;           // 충전기 없이 쓰기 시작한 시각과 그때 % (실제 소비 전류 계산용)
+uint8_t useStartPct;
 
 // ---- 내 위치 (GPS, 안 잡히면 폰이 빌려준 위치) ----
 bool myFix, usingPhone;
@@ -101,8 +107,8 @@ uint16_t farM;
 uint8_t screenMin;
 
 // ---- 화면 ----
-enum { PAGE_FRIEND, PAGE_FIND, PAGE_MEET, PAGE_GPS, PAGE_SYSTEM, NPAGES };
-const char *PAGE_NAMES[] = {"상대", "실내 찾기", "만남 장소", "GPS", "시스템"};
+enum { PAGE_FRIEND, PAGE_MEET, PAGE_GPS, PAGE_SYSTEM, NPAGES };
+const char *PAGE_NAMES[] = {"상대", "만남 장소", "GPS", "시스템"};
 int page = PAGE_FRIEND;
 bool screenOn = true;
 uint32_t lastActivity;
@@ -688,6 +694,10 @@ void readBattery() {
       settleUntil = now + BAT_SETTLE_MS;
     }
   }
+  static bool wasCharging = false;
+  if (charging && !wasCharging) chgStartMs = now, chgStartPct = batPct;
+  if (!charging && wasCharging) useStartMs = 0;  // 충전 끝 → 소비 전류를 새로 잼
+  wasCharging = charging;
   if (fabsf(v - avg) > BAT_JUMP_V) avg = v;  // 꽂거나 뺀 순간엔 평균을 새로 시작
   else avg += (v - avg) * 0.2f;              // 무선 송신 등으로 잠깐 처지는 것은 평균으로 무시
   batV = avg;
@@ -715,6 +725,24 @@ void readBattery() {
   }
   known = true;
   settleUntil = 0;
+  if (!useStartMs || batPct > useStartPct) useStartMs = now, useStartPct = batPct;
+}
+
+// 충전 중 %: 충전을 시작할 때 %에 들어간 양을 더함 (전압은 충전 중에 믿을 수 없어서)
+uint8_t chargePct() {
+  float added = (millis() - chgStartMs) / 3600000.0f * CHARGE_MA / batMah * 100;
+  return min(99, (int)(chgStartPct + added));
+}
+
+// 다 차기까지 분. 끝 무렵엔 충전이 느려져서 20% 더 잡음
+uint32_t chargeMinLeft() { return (100 - chargePct()) / 100.0f * batMah / CHARGE_MA * 60 * 1.2f; }
+
+// 평균 소비 전류: 충전기 없이 20분 넘게 쓰고 2% 넘게 줄었으면 실제 값, 아니면 추정값
+float avgMa(bool *measured) {
+  float h = (millis() - useStartMs) / 3600000.0f;
+  int drop = useStartPct - batPct;
+  *measured = useStartMs && h >= 1 / 3.0f && drop >= 2;
+  return *measured ? drop / 100.0f * batMah / h : BAT_AVG_MA;
 }
 
 void saveCalibration() {
@@ -889,13 +917,13 @@ void onShortPress() {
     alert = 0;
     return;
   }
+  if (dogMode) return;  // 강아지 토템은 화면 하나뿐
   page = (page + 1) % NPAGES;
   showToast(PAGE_NAMES[page]);  // 맨 위에는 이름이 있으니 화면 이름은 잠깐 보여 줌
 }
 
 void onLongPress() {
   if (page == PAGE_FRIEND) sendMessage(1);
-  else if (page == PAGE_FIND) startFind(true);
   else if (page == PAGE_SYSTEM) {  // 장거리 매너 모드 켜고 끄기 (두 토템 다 같아야 서로 보임)
 #if defined(MANNER_ONLY)
     showToast("장거리 고정");
@@ -1030,53 +1058,6 @@ void drawFriendPage() {
   }
 }
 
-void drawFindPage() {
-  char s[40];
-  uint32_t age = (millis() - frMs) / 1000;
-  if (!finding()) {
-    ko(0, 28, "길게 눌러 시작");
-    ko(0, 43, "1초마다 신호, 방향 재기");
-    if (friendFinding()) ko(0, 58, "상대가 찾는 중이에요");
-    else if (frSeen) {
-      snprintf(s, sizeof(s), "지금 신호 %ddBm", frRssi);
-      ko(0, 58, s);
-    }
-    return;
-  }
-  if (!frSeen || age > 15) {
-    ko(0, 32, "상대 신호가 없어요");
-    ko(0, 48, "기다리는 중...");
-    return;
-  }
-
-  // 왼쪽: 방향을 알면 화살표, 아니면 잰 방향 표시 (12칸)
-  if (scanReady && scanSpread >= SCAN_MIN_SPREAD) {
-    drawWedge(28, 40, 19, scanDir - headingDeg, SCAN_WEDGE_DEG);  // 신호로 잰 방향은 늘 대략
-  } else {
-    oled.drawCircle(28, 40, 3);
-    for (int i = 0; i < SCAN_BINS; i++) {
-      float a = (i * 30 + 15 - headingDeg) * DEG_TO_RAD;
-      int x = 28 + lroundf(19 * sinf(a)), y = 40 - lroundf(19 * cosf(a));
-      if (scanCnt[i]) oled.drawDisc(x, y, 3);
-      else oled.drawCircle(x, y, 2);
-    }
-  }
-
-  // 오른쪽: 신호 평균, 가까워지는지
-  oled.setFont(FONT_BIG);
-  snprintf(s, sizeof(s), "%d", (int)lroundf(rssiAvg));
-  oled.drawStr(58, 32, s);
-  int w = oled.getStrWidth(s);
-  oled.setFont(FONT_SMALL);
-  oled.drawStr(60 + w, 32, "dBm");
-  ko(58, 46, trend > 0 ? "가까워져요" : trend < 0 ? "멀어져요" : "그대로");
-  if (!bnoOk) ko(58, 60, "나침반 없음");
-  else if (!scanReady) {
-    snprintf(s, sizeof(s), "한 바퀴 %d/%d", scanCover, SCAN_BINS);
-    ko(58, 60, s);
-  } else ko(58, 60, scanSpread >= SCAN_MIN_SPREAD ? "화살표 쪽이 셈" : "방향 모르겠음");
-}
-
 void drawMeetPage() {
   char s[32];
   if (!meetSet) {
@@ -1140,6 +1121,33 @@ void drawSystemPage() {
   ko(0, 63, s);
 }
 
+void fmtDur(char *s, size_t n, uint32_t min) {
+  if (min >= 60) snprintf(s, n, "%lu시간 %lu분", (unsigned long)(min / 60), (unsigned long)(min % 60));
+  else snprintf(s, n, "%lu분", (unsigned long)min);
+}
+
+// 강아지 토템 화면: 배터리, 남은 시간, 충전 시간만
+void drawDogPage() {
+  char s[40], t[20];
+  if (charging) {
+    snprintf(s, sizeof(s), "충전 중 약 %d%%", chargePct());
+    ko(0, 28, s);
+    fmtDur(t, sizeof(t), chargeMinLeft());
+    snprintf(s, sizeof(s), "다 차기까지 약 %s", t);
+    ko(0, 43, s);
+  } else {
+    snprintf(s, sizeof(s), "배터리 %d%% (%.2fV)", batPct, batV);
+    ko(0, 28, s);
+    bool measured;
+    float ma = avgMa(&measured);
+    fmtDur(t, sizeof(t), (uint32_t)(batPct / 100.0f * batMah / ma * 60));
+    snprintf(s, sizeof(s), "남은 시간 약 %s", t);
+    ko(0, 43, s);
+  }
+  snprintf(s, sizeof(s), "%dmAh  상대 %s", batMah, frSeen && (millis() - frMs) / 1000 < friendValidS() ? "연결됨" : "없음");
+  ko(0, 58, s);
+}
+
 void drawAlert() {
   static const char *MSG[] = {"", "보고싶어!", "어디야?", "곧 갈게!"};
   char s[48];
@@ -1181,9 +1189,9 @@ void render() {
     drawAlert();
   } else {
     drawHeader();
-    switch (page) {
+    if (dogMode) drawDogPage();
+    else switch (page) {
       case PAGE_FRIEND: drawFriendPage(); break;
-      case PAGE_FIND: drawFindPage(); break;
       case PAGE_MEET: drawMeetPage(); break;
       case PAGE_GPS: drawGpsPage(); break;
       case PAGE_SYSTEM: drawSystemPage(); break;
@@ -1242,6 +1250,8 @@ void setup() {
   prefs.begin("totem", true);
   farM = prefs.getUShort("farM", 0);
   screenMin = prefs.getUChar("scrMin", SCREEN_MIN_DEFAULT);
+  dogMode = prefs.getUChar("role", 0) == 1;
+  batMah = prefs.getUShort("batMah", BAT_MAH_DEFAULT);
   snprintf(myName, sizeof(myName), "토템%02X%02X", mac[4], mac[5]);  // 이름을 정하기 전 기본값
   if (prefs.isKey("name")) prefs.getString("name", myName, sizeof(myName));
 #if defined(MANNER_ONLY)
@@ -1300,7 +1310,19 @@ void handleSerial() {
       continue;
     }
     line[n] = 0;
-    if (n > 5 && !strncmp(line, "name ", 5)) {
+    if (!strcmp(line, "role dog") || !strcmp(line, "role person")) {
+      dogMode = line[5] == 'd';
+      prefs.begin("totem", false);
+      prefs.putUChar("role", dogMode);
+      prefs.end();
+      Serial.printf("role=%s\n", dogMode ? "dog" : "person");
+    } else if (!strncmp(line, "bat ", 4) && atoi(line + 4) >= 100) {
+      batMah = atoi(line + 4);
+      prefs.begin("totem", false);
+      prefs.putUShort("batMah", batMah);
+      prefs.end();
+      Serial.printf("bat=%umAh\n", batMah);
+    } else if (n > 5 && !strncmp(line, "name ", 5)) {
       Cmd c = {(uint8_t)min(n - 4, 1 + NAME_LEN), {CMD_NAME}};
       memcpy(c.d + 1, line + 5, c.len - 1);
       handleCmd(c);

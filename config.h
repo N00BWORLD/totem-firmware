@@ -3,7 +3,7 @@
 // 아래 핀은 실제 보드에서 tools/probe 스케치로 확인한 값입니다.
 // 배선이 다르면 tools/probe 를 올려서 핀을 찾은 뒤 여기만 고치면 됩니다.
 
-#define FW_VERSION "4.15"
+#define FW_VERSION "4.16"
 
 // 보드
 #define PIN_VEXT 36       // LOW = Vext 켜짐 (OLED, GPS, BNO055 전원)
@@ -15,6 +15,10 @@
 #define BAT_JUMP_V 0.08f          // 이만큼 갑자기 오르면 충전기 꽂음, 내리면 뺌
 #define BAT_SETTLE_MS 60000       // 충전기를 뺀 뒤 전압이 자리 잡는 시간
 #define BAT_UNPLUG_V 0.04f        // 충전 중 최고 전압보다 이만큼 낮게 30초면 충전기 뺀 것
+// 남은 시간·충전 시간 추정 (실측 전 추정값). 배터리 용량은 USB로 "bat 2000"처럼 바꿈
+#define BAT_MAH_DEFAULT 500
+#define BAT_AVG_MA 70             // 평균 소비 전류 추정. 20분 넘게 쓰면 실제 줄어든 %로 다시 계산
+#define CHARGE_MA 300             // 보드 충전 전류 추정
 
 // 보드 내장 OLED (SSD1306 128x64, I2C 0x3C)
 #define PIN_OLED_SDA 17
@@ -57,9 +61,9 @@
 #define MANNER_CR 8
 #define MANNER_POWER_MAX 22
 #define MANNER_POWER_MIN 22           // 출력 고정 (상대가 잘 들려도 낮추지 않음)
-#define MANNER_TX_INTERVAL_MS 60000   // 한 번에 4초라 1분 간격 (앱은 40초 넘으면 "마지막 신호"로 표시)
+#define MANNER_TX_INTERVAL_MS 20000   // 20초 + 0~4초 랜덤 (TX_JITTER_MS). 한 번에 약 4초
 #define MANNER_FIND_INTERVAL_MS 10000 // 실내 찾기 중
-#define MANNER_DUTY_PCT 10            // 한 시간 송신 시간 상한 (10% = 360초, 1분 간격 비컨이 약 7%)
+#define MANNER_DUTY_PCT 25            // 한 시간 송신 시간 상한 (25% = 900초, 22초 간격 비컨이 약 18%)
 #define MANNER_EXTRA_EVERY 16         // 한 번에 4초라 다시 보내기는 드물게
 #elif defined(REGION_US)
 // 902~928 MHz. 한 채널에 고정하려면 대역폭 500 kHz(디지털 변조 규정) → 최대 30 dBm.
@@ -108,7 +112,7 @@
 #endif
 
 #define TX_INTERVAL_MS 15000      // 배터리 절약. 찾는 중에는 FIND_TX_INTERVAL_MS
-#define TX_JITTER_MS 3000         // 두 토템이 같은 순간에 보내지 않게
+#define TX_JITTER_MS 4000         // 0~4초 랜덤: 두 토템이 같은 순간에 보내 서로 묻히지 않게
 
 // 배터리 절약
 #define CPU_MHZ 80                // BLE가 되는 최저 속도
