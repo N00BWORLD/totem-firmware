@@ -3,7 +3,7 @@
 // 아래 핀은 실제 보드에서 tools/probe 스케치로 확인한 값입니다.
 // 배선이 다르면 tools/probe 를 올려서 핀을 찾은 뒤 여기만 고치면 됩니다.
 
-#define FW_VERSION "4.9"
+#define FW_VERSION "4.10"
 
 // 보드
 #define PIN_VEXT 36       // LOW = Vext 켜짐 (OLED, GPS, BNO055 전원)
@@ -49,20 +49,23 @@
 #define LORA_BW 500.0f
 #define LORA_SF 11
 #define LORA_POWER 17     // dBm. 22(최대)에서 버튼 누를 때 재시작이 있어 낮춤 (FCC 한도 30 dBm)
-// 장거리 매너 모드: SF12/BW500, 한 번 송신 약 0.33초 (짧은 프레임)
+// 장거리 매너 모드: FCC가 허용하는 범위에서 가장 멀리. SF12/BW500/CR4/8, 칩 최대 22dBm (FCC 한도 30dBm)
+// 한 번 송신 약 0.43초 (짧은 프레임). 상대가 잘 들리면 출력을 스스로 낮춤
 #define MANNER_BW 500.0f
 #define MANNER_SF 12
-#define MANNER_POWER_MAX 17
+#define MANNER_CR 8
+#define MANNER_POWER_MAX 22
 #elif defined(REGION_KR)
 // 920.9~923.3 MHz, 200 kHz 간격. 922.1 MHz는 채널 위에 있음.
 #define LORA_FREQ 922.7f  // 922.1~922.5는 LoRaWAN 기본 채널이라 붐빔, 923.1은 Z-Wave
 #define LORA_BW 125.0f
 #define LORA_SF 9
-#define LORA_POWER 13     // dBm, KR920 한도(14 dBm) 아래로
-// 장거리 매너 모드: SF10/BW125, 한 번 송신 약 0.37초 (짧은 프레임). 안테나 약 2dBi 포함 EIRP 14dBm 아래
+#define LORA_POWER 11     // dBm. 스틱 안테나 3dBi를 더해도 EIRP 14dBm (KR920 한도)
+// 장거리 매너 모드: SF10/BW125, 한 번 송신 약 0.37초 (짧은 프레임). CR을 올리면 0.4초를 넘어서 4/5 그대로
 #define MANNER_BW 125.0f
 #define MANNER_SF 10
-#define MANNER_POWER_MAX 12
+#define MANNER_CR 5
+#define MANNER_POWER_MAX 11
 #endif
 #define LORA_CR 5
 #define LORA_SYNC 0x12    // 사설 네트워크

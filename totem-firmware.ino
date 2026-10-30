@@ -322,7 +322,7 @@ void applyRadio() {
   radio.standby();
   radio.setBandwidth(manner ? MANNER_BW : LORA_BW);
   radio.setSpreadingFactor(manner ? MANNER_SF : LORA_SF);
-  radio.setCodingRate(LORA_CR);
+  radio.setCodingRate(manner ? MANNER_CR : LORA_CR);
   txPower = manner ? MANNER_POWER_MAX : LORA_POWER;
   radio.setOutputPower(txPower);
   airBudgetMs = AIR_BUDGET_MAX;  // 켜자마자 바로 보낼 수 있게
@@ -410,7 +410,13 @@ void sendManner() {
   if (!len || !txManner(f, len)) return;
   sentSinceAdapt = true;
   int kind = extraKind(n);
-  if (kind == MX_NONE || !(len = buildExtra(kind, f)) || !txManner(f, len)) return;
+  if (kind == MX_NONE) return;
+  uint32_t until = millis() + 100;  // 연속 송신 사이 쉬는 시간 (남이 끼어들 틈). 그동안 받기는 함
+  while ((int32_t)(millis() - until) < 0) {
+    handleRadio();
+    delay(5);
+  }
+  if (!(len = buildExtra(kind, f)) || !txManner(f, len)) return;
   if (kind == MX_MEET) meetVerSent = meetVer;  // 실제로 보낸 뒤에만 보냈다고 표시
   else memcpy(nameSent, myName, NAME_LEN);
 }
