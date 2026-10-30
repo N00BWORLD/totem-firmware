@@ -485,7 +485,7 @@ void urgentTx() { nextTxMs = millis() + 200 + random(400); }
 
 bool sendBeacon() {
   bool clear = waitChannel(radio.getTimeOnAir(FRAME_LEN) / 1000);
-#if defined(REGION_KR)
+#if !defined(REGION_US)
   if (!clear) return false;  // 한국 LBT: 채널이 바쁘면 보내지 않음
 #endif
   Payload p{};  // LBT 뒤에 만듦: 기다리는 동안 받은 메시지의 확인(ack)까지 실림
@@ -891,6 +891,10 @@ void onLongPress() {
     saveCalibration();
     showToast(calSaved ? "보정값 저장됨" : "저장 실패");
   } else if (page == PAGE_SYSTEM) {  // 장거리 매너 모드 켜고 끄기 (두 토템 다 같아야 서로 보임)
+#if defined(MANNER_ONLY)
+    showToast("장거리 고정");
+    return;
+#endif
     manner = !manner;
     prefs.begin("totem", false);
     prefs.putUChar("manner", manner);
@@ -1253,7 +1257,11 @@ void setup() {
   screenMin = prefs.getUChar("scrMin", SCREEN_MIN_DEFAULT);
   snprintf(myName, sizeof(myName), "토템%02X%02X", mac[4], mac[5]);  // 이름을 정하기 전 기본값
   if (prefs.isKey("name")) prefs.getString("name", myName, sizeof(myName));
+#if defined(MANNER_ONLY)
+  manner = true;
+#else
   manner = prefs.getUChar("manner", 0);
+#endif
   prefs.end();
   prefs.begin("totem", false);
   bootCnt = prefs.getUShort("boot", 0) + 1;  // 매너 모드 IV가 부팅마다 달라지게
