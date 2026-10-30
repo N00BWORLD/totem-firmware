@@ -101,8 +101,8 @@ uint16_t farM;
 uint8_t screenMin;
 
 // ---- 화면 ----
-enum { PAGE_FRIEND, PAGE_FIND, PAGE_MEET, PAGE_GPS, PAGE_COMPASS, PAGE_SYSTEM, NPAGES };
-const char *PAGE_NAMES[] = {"상대", "실내 찾기", "만남 장소", "GPS", "나침반", "시스템"};
+enum { PAGE_FRIEND, PAGE_FIND, PAGE_MEET, PAGE_GPS, PAGE_SYSTEM, NPAGES };
+const char *PAGE_NAMES[] = {"상대", "실내 찾기", "만남 장소", "GPS", "시스템"};
 int page = PAGE_FRIEND;
 bool screenOn = true;
 uint32_t lastActivity;
@@ -887,10 +887,7 @@ void onShortPress() {
 void onLongPress() {
   if (page == PAGE_FRIEND) sendMessage(1);
   else if (page == PAGE_FIND) startFind(true);
-  else if (page == PAGE_COMPASS) {
-    saveCalibration();
-    showToast(calSaved ? "보정값 저장됨" : "저장 실패");
-  } else if (page == PAGE_SYSTEM) {  // 장거리 매너 모드 켜고 끄기 (두 토템 다 같아야 서로 보임)
+  else if (page == PAGE_SYSTEM) {  // 장거리 매너 모드 켜고 끄기 (두 토템 다 같아야 서로 보임)
 #if defined(MANNER_ONLY)
     showToast("장거리 고정");
     return;
@@ -1102,24 +1099,6 @@ void drawGpsPage() {
   ko(0, 63, s);
 }
 
-void drawCompassPage() {
-  char s[32];
-  if (!bnoOk) {
-    ko(0, 34, "나침반 센서 없음");
-    ko(0, 50, "BNO055 배선 확인");
-    return;
-  }
-  drawArrow(28, 40, 19, -headingDeg);
-  ko(23, 26, "북");
-  oled.setFont(FONT_BIG);
-  snprintf(s, sizeof(s), "%d", (int)lroundf(headingDeg) % 360);
-  oled.drawStr(58, 32, s);
-  oled.setFont(FONT_SMALL);
-  snprintf(s, sizeof(s), "S%d G%d A%d M%d", calStat >> 6, (calStat >> 4) & 3, (calStat >> 2) & 3, calStat & 3);
-  oled.drawStr(58, 43, s);
-  ko(58, 61, calSaved ? "보정 저장됨" : "길게:보정저장");
-}
-
 // 마지막으로 다시 시작된 이유 (갑자기 꺼졌다 켜질 때 원인 찾기용)
 const char *resetWhy() {
   switch (esp_reset_reason()) {
@@ -1198,7 +1177,6 @@ void render() {
       case PAGE_FIND: drawFindPage(); break;
       case PAGE_MEET: drawMeetPage(); break;
       case PAGE_GPS: drawGpsPage(); break;
-      case PAGE_COMPASS: drawCompassPage(); break;
       case PAGE_SYSTEM: drawSystemPage(); break;
     }
     if (millis() - toastMs < 2000) {

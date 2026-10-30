@@ -11,7 +11,14 @@ class Bno055 {
     addr = address;
     if (read8(0x00) != 0xA0) {
       delay(700);  // 전원 켜고 약 650ms 뒤부터 응답
-      if (read8(0x00) != 0xA0) return false;
+      if (read8(0x00) != 0xA0) {
+        // 보드만 다시 시작되면 센서는 전원이 안 꺼져서 절전 모드(suspend)로 남아 있을 수 있음 → 깨우고 리셋
+        write8(0x3E, 0x00);
+        delay(20);
+        write8(0x3F, 0x20);
+        delay(700);
+        if (read8(0x00) != 0xA0) return false;
+      }
     }
     configMode();
     write8(0x3F, 0x20);  // SYS_TRIGGER: 리셋
