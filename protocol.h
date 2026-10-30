@@ -30,6 +30,27 @@ enum { PF_FIX = 1, PF_MEET = 2, PF_PHONE = 4, PF_FIND = 8, PF_CHARGING = 16 };  
 #define FRAME_TAG 8
 #define FRAME_LEN (FRAME_HDR + sizeof(Payload) + FRAME_TAG)
 
+// ---- LoRa 장거리 매너 모드: 짧은 프레임 (한 번 송신 0.4초 안쪽) ----
+// [netId 1][senderId 2][bootCnt 2][counter 2] [본문, AES-128-GCM] [tag 4]
+// 본문 길이로 종류를 구분: 비컨 13, 만남 장소 11, 이름 12
+#define MF_HDR 7
+#define MF_TAG 4
+struct __attribute__((packed)) MBeacon {
+  uint8_t flags;    // MBF_* | (msgType-1) << 4 | 오차 등급 << 6
+  uint8_t bat;
+  int32_t lat, lon;
+  int8_t snr;       // 상대 신호를 내가 받은 SNR (dB). MB_NO_SNR = 못 받음 → 상대 출력 조절용
+  uint8_t msgSeq, ackSeq;
+};
+struct __attribute__((packed)) MMeet {
+  uint16_t meetVer;
+  int32_t mlat, mlon;
+  uint8_t set;
+};
+static_assert(sizeof(MBeacon) == 13 && sizeof(MMeet) == 11 && NAME_LEN == 12, "manner frame sizes");
+enum { MBF_FIX = 1, MBF_PHONE = 2, MBF_FIND = 4, MBF_CHARGING = 8 };
+#define MB_NO_SNR (-128)
+
 // ---- BLE: 토템 <-> totem-map 앱 ----
 #define BLE_SVC_UUID "6e7a0001-7c3a-4b8e-9f2d-544f54454d31"
 #define BLE_STATUS_UUID "6e7a0002-7c3a-4b8e-9f2d-544f54454d31"  // read/notify, STATUS_LEN 바이트

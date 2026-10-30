@@ -113,6 +113,20 @@ char toast[40];
 uint32_t toastMs;
 uint32_t nextTxMs;
 
+// ---- 장거리 매너 모드 (NVS "totem" manner) ----
+bool manner;
+int8_t txPower = LORA_POWER;  // 매너 모드에서는 상대가 알려 준 SNR로 조절
+uint16_t bootCnt, mCounter;   // 짧은 프레임 IV: 부팅마다 늘어나는 번호 + 보낸 개수
+int8_t frSnr = MB_NO_SNR;     // 상대 신호를 내가 받은 SNR (다음 비컨에 실어 보냄)
+uint32_t frSnrMs;
+float airBudgetMs;            // 송신 시간 예산 (시간당 MANNER_DUTY_PCT%)
+uint32_t airRefillMs;
+uint16_t meetVerSent;         // 상대에게 실제로 보낸 만남 장소 버전
+char nameSent[NAME_LEN + 1];  // 상대에게 실제로 보낸 이름
+bool ivOk;                    // bootCnt를 NVS에 저장했을 때만 짧은 프레임을 보냄 (IV 재사용 방지)
+bool sentSinceAdapt;          // 내가 보낸 뒤 상대 SNR로 한 번만 출력 조절
+const float AIR_BUDGET_MAX = 3600000.0f * MANNER_DUTY_PCT / 100;
+
 void IRAM_ATTR onRadioIrq() { radioIrq = true; }
 
 // ================= BLE =================
@@ -162,7 +176,7 @@ void setupBle() {
 }
 
 bool finding() { return findUntil && (int32_t)(millis() - findUntil) < 0; }
-bool friendFinding() { return frFinding && frSeen && millis() - frMs < 10000; }
+bool friendFinding() { return frFinding && frSeen && millis() - frMs < (manner ? 3 * MANNER_FIND_INTERVAL_MS + 3000 : 10000); }
 
 static void put16(uint8_t *b, uint16_t v) { memcpy(b, &v, 2); }
 static void put32(uint8_t *b, int32_t v) { memcpy(b, &v, 4); }
@@ -242,6 +256,202 @@ bool openFrame(const uint8_t *frame, Payload &p) {
                                    frame + FRAME_HDR, (uint8_t *)&p);
   mbedtls_gcm_free(&g);
   return r == 0;
+}
+
+// ---- 장거리 매너 모드: 짧은 프레임 ----
+void showToast(const char *s);
+void onFriend(uint16_t sid, const Payload &p, float rssi);
+void handleRadio();
+static void makeMIv(const uint8_t *frame, uint8_t *iv) {
+  memset(iv, 0, 12);
+  memcpy(iv, frame + 1, MF_HDR - 1);
+  iv[11] = 0x4D;  // 일반 프레임 IV(끝 두 바이트 0)와 겹치지 않게
+}
+
+size_t sealMFrame(const uint8_t *body, size_t n, uint8_t *frame) {
+  if (++mCounter == 0) {  // 65536개마다 부팅 번호를 올려 IV가 다시 쓰이지 않게
+    bootCnt++;
+    prefs.begin("totem", false);
+    ivOk = prefs.putUShort("boot", bootCnt) == 2;
+    prefs.end();
+  }
+  frame[0] = netId;
+  frame[1] = myId >> 8;
+  frame[2] = myId & 0xFF;
+  memcpy(frame + 3, &bootCnt, 2);
+  memcpy(frame + 5, &mCounter, 2);
+  uint8_t iv[12];
+  makeMIv(frame, iv);
+  mbedtls_gcm_context g;
+  mbedtls_gcm_init(&g);
+  mbedtls_gcm_setkey(&g, MBEDTLS_CIPHER_ID_AES, TOTEM_KEY, 128);
+  int r = mbedtls_gcm_crypt_and_tag(&g, MBEDTLS_GCM_ENCRYPT, n, iv, 12, frame, MF_HDR, body, frame + MF_HDR, MF_TAG,
+                                    frame + MF_HDR + n);
+  mbedtls_gcm_free(&g);
+  return r == 0 ? MF_HDR + n + MF_TAG : 0;
+}
+
+bool openMFrame(const uint8_t *frame, size_t len, uint8_t *body) {
+  size_t n = len - MF_HDR - MF_TAG;
+  uint8_t iv[12];
+  makeMIv(frame, iv);
+  mbedtls_gcm_context g;
+  mbedtls_gcm_init(&g);
+  mbedtls_gcm_setkey(&g, MBEDTLS_CIPHER_ID_AES, TOTEM_KEY, 128);
+  int r = mbedtls_gcm_auth_decrypt(&g, n, iv, 12, frame, MF_HDR, frame + MF_HDR + n, MF_TAG, frame + MF_HDR, body);
+  mbedtls_gcm_free(&g);
+  return r == 0;
+}
+
+// 매너 모드 LBT: LoRa 신호(CAD)도 없고 다른 전파도 MANNER_LBT_DBM보다 약할 때만 비었다고 봄
+bool channelFree() {
+  int cad = radio.scanChannel();
+  radioIrq = false;  // CAD 완료 IRQ를 받은 패킷으로 착각하지 않게
+  radio.startReceive();
+  if (cad == RADIOLIB_LORA_DETECTED) return false;
+  delay(6);  // TCXO가 켜지고 수신이 자리 잡을 때까지
+  for (int i = 0; i < 5; i++) {
+    if (radio.getRSSI(false) > MANNER_LBT_DBM) return false;
+    delay(1);
+  }
+  return true;
+}
+
+void applyRadio() {
+  if (!loraOk) return;
+  radio.standby();
+  radio.setBandwidth(manner ? MANNER_BW : LORA_BW);
+  radio.setSpreadingFactor(manner ? MANNER_SF : LORA_SF);
+  radio.setCodingRate(LORA_CR);
+  txPower = manner ? MANNER_POWER_MAX : LORA_POWER;
+  radio.setOutputPower(txPower);
+  airBudgetMs = AIR_BUDGET_MAX;  // 켜자마자 바로 보낼 수 있게
+  airRefillMs = millis();
+  radioIrq = false;
+  radio.startReceive();
+}
+
+// 상대가 알려 준 SNR(내 신호를 상대가 받은 세기)로 출력 조절: 여유가 크면 줄이고 작으면 늘림
+void adaptPower(int8_t snrOfMe) {
+  if (snrOfMe == MB_NO_SNR) {  // 상대가 내 신호를 못 받고 있음
+    txPower = MANNER_POWER_MAX;
+    return;
+  }
+  if (!sentSinceAdapt) return;  // 같은 SNR로 두 번 내리지 않게
+  sentSinceAdapt = false;
+  float need = -7.5f - 2.5f * (MANNER_SF - 7);  // 이 SF에서 받을 수 있는 최소 SNR
+  float margin = snrOfMe - need;
+  if (margin > 12 && txPower - 2 >= MANNER_POWER_MIN) txPower -= 2;
+  else if (margin < 6 && txPower + 2 <= MANNER_POWER_MAX) txPower += 2;
+}
+
+// 비컨 뒤에 붙여 보낼 프레임: 만남 장소나 이름이 바뀌었으면 그것, 아니면 가끔 다시 (상대가 놓쳤을 때 대비)
+enum { MX_NONE, MX_MEET, MX_NAME };
+int extraKind(uint8_t n) {
+  if (meetVer != meetVerSent || (meetVer && n % 8 == 0)) return MX_MEET;
+  if (memcmp(myName, nameSent, NAME_LEN) || n % 16 == 4) return MX_NAME;
+  return MX_NONE;
+}
+
+size_t buildExtra(int kind, uint8_t *f) {
+  if (kind == MX_MEET) {
+    MMeet m{meetVer, meetLat, meetLon, (uint8_t)meetSet};
+    return sealMFrame((const uint8_t *)&m, sizeof(m), f);
+  }
+  return sealMFrame((const uint8_t *)myName, NAME_LEN, f);
+}
+
+size_t buildBeacon(uint8_t *f) {
+  uint8_t acc = !myFix ? 3 : myAcc < 10 ? 0 : myAcc < 30 ? 1 : myAcc < 100 ? 2 : 3;
+  MBeacon b{};
+  b.flags = (myFix ? MBF_FIX : 0) | (usingPhone ? MBF_PHONE : 0) | (finding() ? MBF_FIND : 0) | (charging ? MBF_CHARGING : 0) |
+            ((txMsgType ? txMsgType - 1 : 0) & 3) << 4 | acc << 6;
+  b.bat = batPct;
+  b.lat = myLat;
+  b.lon = myLon;
+  b.snr = frSeen && millis() - frSnrMs < 2 * MANNER_TX_INTERVAL_MS + 5000 ? frSnr : MB_NO_SNR;
+  b.msgSeq = pingTx == 1 ? txMsgSeq : 0;
+  b.ackSeq = rxMsgSeq;
+  return sealMFrame((const uint8_t *)&b, sizeof(b), f);
+}
+
+// 매너 모드 한 프레임 송신. 시간 예산이 없거나 채널이 계속 바쁘면 보내지 않고 false
+bool txManner(const uint8_t *f, size_t len) {
+  float air = radio.getTimeOnAir(len) / 1000.0f;
+  if (airBudgetMs < air) return false;
+  bool free = false;
+  for (int i = 0; i < 3 && !(free = channelFree()); i++) {
+    uint32_t until = millis() + random(200, 1000);  // 기다리는 동안 상대 프레임은 받음
+    while ((int32_t)(millis() - until) < 0) {
+      handleRadio();
+      delay(5);
+    }
+  }
+  if (!free) return false;
+  radio.setOutputPower(txPower);
+  int st = radio.transmit(f, len);
+  airBudgetMs -= air;
+  radioIrq = false;
+  radio.startReceive();
+  return st == RADIOLIB_ERR_NONE;
+}
+
+// 매너 모드 송신: 비컨 하나 + 필요하면 만남 장소나 이름 하나
+void sendManner() {
+  if (!ivOk) return;
+  uint32_t now = millis();
+  airBudgetMs = min(AIR_BUDGET_MAX, airBudgetMs + (now - airRefillMs) * (MANNER_DUTY_PCT / 100.0f));
+  airRefillMs = now;
+  if (frSeen && now - frMs > 3UL * MANNER_TX_INTERVAL_MS) txPower = MANNER_POWER_MAX;  // 상대가 안 들리면 다시 최대로
+  static uint8_t n;
+  n++;
+  uint8_t f[MF_HDR + NAME_LEN + MF_TAG];
+  size_t len = buildBeacon(f);
+  if (!len || !txManner(f, len)) return;
+  sentSinceAdapt = true;
+  int kind = extraKind(n);
+  if (kind == MX_NONE || !(len = buildExtra(kind, f)) || !txManner(f, len)) return;
+  if (kind == MX_MEET) meetVerSent = meetVer;  // 실제로 보낸 뒤에만 보냈다고 표시
+  else memcpy(nameSent, myName, NAME_LEN);
+}
+
+void onMFrame(uint16_t sid, const uint8_t *body, size_t n, float rssi, float snr) {
+  frSnr = (int8_t)constrain(lroundf(snr), -127, 127);
+  frSnrMs = millis();
+  if (n == sizeof(MBeacon)) {
+    MBeacon b;
+    memcpy(&b, body, sizeof(b));
+    static const uint16_t ACC_M[] = {5, 20, 60, 150};
+    Payload p{};  // 일반 프레임 처리(onFriend)를 그대로 씀. 만남 장소·이름은 지금 값 유지
+    p.magic = 'T';
+    p.flags = (b.flags & MBF_FIX ? PF_FIX : 0) | (b.flags & MBF_PHONE ? PF_PHONE : 0) | (b.flags & MBF_FIND ? PF_FIND : 0) |
+              (b.flags & MBF_CHARGING ? PF_CHARGING : 0) | (meetSet ? PF_MEET : 0);
+    p.bat = b.bat;
+    p.lat = b.lat;
+    p.lon = b.lon;
+    p.sats = frSats;
+    p.meetVer = meetVer;
+    p.msgSeq = b.msgSeq;
+    p.msgType = ((b.flags >> 4) & 3) + 1;
+    p.ackSeq = b.ackSeq;
+    p.acc = ACC_M[b.flags >> 6];
+    memcpy(p.name, frName, NAME_LEN);
+    onFriend(sid, p, rssi);
+    adaptPower(b.snr);
+  } else if (n == sizeof(MMeet)) {
+    MMeet m;
+    memcpy(&m, body, sizeof(m));
+    if ((int16_t)(m.meetVer - meetVer) > 0) {
+      meetVer = meetVerSent = m.meetVer;
+      meetSet = m.set;
+      meetLat = m.mlat;
+      meetLon = m.mlon;
+      showToast(meetSet ? "만남 장소 지정됨" : "만남 장소 지워짐");
+    }
+  } else if (n == NAME_LEN) {
+    memcpy(frName, body, NAME_LEN);
+    frName[NAME_LEN] = 0;
+  }
 }
 
 void urgentTx() { nextTxMs = millis() + 200 + random(400); }
@@ -388,7 +598,18 @@ void handleRadio() {
   size_t n = radio.getPacketLength();
   int st = radio.readData(f, min(n, sizeof(f)));
   float rssi = radio.getRSSI();
+  float snr = radio.getSNR();
   radio.startReceive();
+  if (manner) {
+    if (st != RADIOLIB_ERR_NONE || n > MF_HDR + NAME_LEN + MF_TAG || n < MF_HDR + MF_TAG || f[0] != netId) return;
+    size_t body = n - MF_HDR - MF_TAG;
+    if (body != sizeof(MBeacon) && body != sizeof(MMeet) && body != NAME_LEN) return;
+    uint16_t sid = f[1] << 8 | f[2];
+    uint8_t b[max(sizeof(MBeacon), max(sizeof(MMeet), (size_t)NAME_LEN))];
+    if (sid == myId || !openMFrame(f, n, b)) return;  // 키가 다르면 여기서 버려짐
+    onMFrame(sid, b, body, rssi, snr);
+    return;
+  }
   if (st != RADIOLIB_ERR_NONE || n != FRAME_LEN || f[0] != netId) return;
   uint16_t sid = f[1] << 8 | f[2];
   if (sid == myId) return;
@@ -641,6 +862,14 @@ void onLongPress() {
   else if (page == PAGE_COMPASS) {
     saveCalibration();
     showToast(calSaved ? "보정값 저장됨" : "저장 실패");
+  } else if (page == PAGE_SYSTEM) {  // 장거리 매너 모드 켜고 끄기 (두 토템 다 같아야 서로 보임)
+    manner = !manner;
+    prefs.begin("totem", false);
+    prefs.putUChar("manner", manner);
+    prefs.end();
+    applyRadio();
+    urgentTx();
+    showToast(manner ? "장거리 매너 켬" : "장거리 매너 끔");
   }
 }
 
@@ -711,10 +940,10 @@ void drawHeader() {
   char s[24];
   ko(0, 11, myName);
   oled.setFont(FONT_SMALL);
-  snprintf(s, sizeof(s), "%s%s%s %d%%", finding() || friendFinding() ? "FIND " : "", bleConnected ? "BLE " : "",
-           usingPhone ? "PH " : "", batPct);
-  if (charging) snprintf(s, sizeof(s), "%s%s%sCHG", finding() || friendFinding() ? "FIND " : "", bleConnected ? "BLE " : "",
-                         usingPhone ? "PH " : "");
+  snprintf(s, sizeof(s), "%s%s%s%s %d%%", manner ? "M " : "", finding() || friendFinding() ? "FIND " : "",
+           bleConnected ? "BLE " : "", usingPhone ? "PH " : "", batPct);
+  if (charging) snprintf(s, sizeof(s), "%s%s%s%sCHG", manner ? "M " : "", finding() || friendFinding() ? "FIND " : "",
+                         bleConnected ? "BLE " : "", usingPhone ? "PH " : "");
   oled.drawStr(128 - oled.getStrWidth(s), 9, s);
   oled.drawHLine(0, 13, 128);
 }
@@ -879,8 +1108,11 @@ void drawSystemPage() {
   if (charging) snprintf(s, sizeof(s), "배터리 %.2fV 충전 중", batV);
   else snprintf(s, sizeof(s), "배터리 %.2fV %d%%", batV, batPct);
   ko(0, 26, s);
-  if (frSeen && frCharging) snprintf(s, sizeof(s), "LoRa %s  상대 충전 중", loraOk ? "정상" : "오류");
-  else snprintf(s, sizeof(s), "LoRa %s  상대 %d%%", loraOk ? "정상" : "오류", frSeen ? frBat : 0);
+  char lr[20];  // 매너 모드면 지금 출력도 보여 줌 (상대가 잘 들리면 내려감)
+  if (manner) snprintf(lr, sizeof(lr), "매너 %ddBm", txPower);
+  else strlcpy(lr, loraOk ? "정상" : "오류", sizeof(lr));
+  if (frSeen && frCharging) snprintf(s, sizeof(s), "LoRa %s 상대 충전 중", lr);
+  else snprintf(s, sizeof(s), "LoRa %s 상대 %d%%", lr, frSeen ? frBat : 0);
   ko(0, 39, s);
   snprintf(s, sizeof(s), "%s %s", bleName, bleConnected ? "연결됨" : "대기");
   ko(0, 51, s);
@@ -993,6 +1225,11 @@ void setup() {
   screenMin = prefs.getUChar("scrMin", SCREEN_MIN_DEFAULT);
   snprintf(myName, sizeof(myName), "토템%02X%02X", mac[4], mac[5]);  // 이름을 정하기 전 기본값
   if (prefs.isKey("name")) prefs.getString("name", myName, sizeof(myName));
+  manner = prefs.getUChar("manner", 0);
+  prefs.end();
+  prefs.begin("totem", false);
+  bootCnt = prefs.getUShort("boot", 0) + 1;  // 매너 모드 IV가 부팅마다 달라지게
+  ivOk = prefs.putUShort("boot", bootCnt) == 2;
   prefs.end();
 
   int st = radio.begin(LORA_FREQ, LORA_BW, LORA_SF, LORA_CR, LORA_SYNC, LORA_POWER, LORA_PREAMBLE, LORA_TCXO, false);
@@ -1000,7 +1237,7 @@ void setup() {
   if (loraOk) {
     radio.setCurrentLimit(140);
     radio.setDio1Action(onRadioIrq);
-    radio.startReceive();
+    applyRadio();  // 매너 모드면 SF·대역폭·출력을 바꾸고 수신 시작
   }
 
   Wire1.begin(PIN_BNO_SDA, PIN_BNO_SCL, 100000);
@@ -1051,9 +1288,12 @@ void loop() {
 
   if (findUntil && !finding()) stopFind();  // 3분 지남
   if (loraOk && (int32_t)(now - nextTxMs) >= 0) {
-    sendBeacon();
+    if (manner) sendManner();
+    else sendBeacon();
     bool fast = finding() || friendFinding();  // 한쪽이라도 찾는 중이면 둘 다 빠르게
-    nextTxMs = millis() + (fast ? FIND_TX_INTERVAL_MS + random(400) : TX_INTERVAL_MS + random(TX_JITTER_MS));
+    uint32_t fastMs = manner ? MANNER_FIND_INTERVAL_MS : FIND_TX_INTERVAL_MS;
+    uint32_t slowMs = manner ? MANNER_TX_INTERVAL_MS : TX_INTERVAL_MS;
+    nextTxMs = millis() + (fast ? fastMs + random(400) : slowMs + random(TX_JITTER_MS));
   }
   if (now - statusMs >= 500) {
     statusMs = now;
